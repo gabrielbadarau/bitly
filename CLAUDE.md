@@ -21,6 +21,10 @@ Full requirements/data model/API summary lives in [README.md](README.md) — don
 - **Git identity:** this repo's local `user.name`/`user.email` is set to `Gabriel Badarau <badaraugabriel95@gmail.com>`
   (repo-local config, not global — the machine's global git email is a separate work identity). Never touch global
   git config for this repo's commits.
+- **Remote auth:** origin uses **HTTPS** (`https://github.com/gabrielbadarau/bitly.git`) authenticated via the
+  `gh` CLI credential helper (`gh auth login` as `gabrielbadarau`, then `gh auth setup-git`) — not SSH. The
+  machine's SSH keys are tied up with a separate work GitHub/GHE identity, so SSH push to this repo failed with
+  `Permission denied (publickey)` until this was set up (2026-07-28).
 
 ## Repo structure
 
