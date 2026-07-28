@@ -25,8 +25,9 @@ Local-only, zero-cost: everything runs via Docker (Rancher Desktop), no cloud se
 - `User`: creator of a short URL (omitted in this implementation — auth is out of scope)
 
 **API**
-- `POST /urls` — create a short URL
-- `GET /{code}` — 302 redirect to the original URL
+- `POST /urls` — create a short URL (`{ longUrl, customAlias?, expirationDate? }` → `{ shortUrl }`; JSON fields are
+  camelCase, .NET's default, rather than the reference spec's snake_case)
+- `GET /{code}` — `302` redirect to the original URL, `404` if unknown, `410` if past its expiration date
 
 **Deep dives covered by the reference article** (built incrementally in this repo):
 1. **Uniqueness** — hash+base62 vs. a Redis-backed global counter with base62 encoding
@@ -46,6 +47,7 @@ src/
   Bitly.Api/
     Controllers/     API endpoints
     Models/          Entities (e.g. ShortUrl)
+    Contracts/       Request/response DTOs
     Data/            EF Core DbContext + migrations
 docker-compose.yml    Local PostgreSQL
 Bitly.slnx            Solution file

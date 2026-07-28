@@ -47,8 +47,9 @@ the .NET dependency injection container.
 ```
 src/
   Bitly.Api/
-    Controllers/       API endpoints
+    Controllers/       API endpoints (UrlsController: POST /urls, GET /{code})
     Models/            Entities (ShortUrl)
+    Contracts/         Request/response DTOs (records)
     Data/              BitlyDbContext + Migrations/
 .config/
   dotnet-tools.json     Local tool manifest (dotnet-ef, pinned version)
@@ -77,18 +78,39 @@ Connection string lives in **user-secrets**, not `appsettings.json`:
 `dotnet user-secrets set "ConnectionStrings:BitlyDb" "Host=localhost;Port=5432;Database=bitly;Username=bitly;Password=bitly_dev_only" --project src/Bitly.Api`
 (the `bitly_dev_only` password is only ever used inside the local Docker network — fine to keep in this file and in `docker-compose.yml`, but the connection string itself still stays out of the committed `appsettings.json`/git history as a matter of habit.)
 
+Quick manual test of the end-to-end flow:
+
+```bash
+curl -X POST http://localhost:5299/urls -H "Content-Type: application/json" \
+  -d '{"longUrl": "https://example.com"}'
+# => 201 { "shortUrl": "http://localhost:5299/<code>" }
+
+curl -v http://localhost:5299/<code>
+# => 302 Found, Location: https://example.com
+```
+
 ## Step plan status
 
 - [x] **Step 1** — Repo scaffold: solution, `Bitly.Api` (Web API, controllers), `Bitly.Domain` (class library), `/health` endpoint (built-in Health Checks middleware)
 - [x] **Step 2** — Data model + PostgreSQL via Docker Compose + EF Core migrations
-- [ ] **Step 3** — Naive end-to-end create/redirect flow
+- [x] **Step 3** — Naive end-to-end create/redirect flow
 - [ ] **Step 4** — Deep dive: uniqueness (Redis counter + base62)
 - [ ] **Step 5** — Deep dive: fast redirects (Redis cache-aside)
 - [ ] **Step 6** — Deep dive: scale (Read/Write service split + local load balancer)
 - [ ] **Step 7** — Round out NFRs (expiration cleanup, alias collisions, rate limiting, logging)
 - [ ] **Step 8** — Full Docker Compose stack + polish
 
-Currently on: **Step 2 — done.**
+Currently on: **Step 3 — done.**
+
+**Known limitations carried forward on purpose** (naive step; later steps address these):
+- No collision handling on create. A duplicate `Code`/`CustomAlias` currently throws an unhandled
+  `DbUpdateException` → raw `500` with a full stack trace leaked to the client (verified live — this is real,
+  not hypothetical). Proper handling (e.g. `409 Conflict` on alias collision, retry-with-new-code on the rare
+  random-code collision) belongs in Step 7's NFR pass; generic exception → problem-details mapping should land
+  there too, not just alias-specific handling.
+- `GET /{code}` is a root-level catch-all route — a short code equal to `health` or `urls` would collide with
+  existing routes. Not addressed yet (naive random codes make this astronomically unlikely at this scale, but
+  it is a real gap, not a hypothetical one).
 
 ## Key decisions log
 
@@ -123,6 +145,24 @@ Currently on: **Step 2 — done.**
   referenced only by the `<UserSecretsId>` GUID in the `.csproj` (that GUID itself is not sensitive).
 - **`postgres:16-alpine` via `docker-compose.yml`, named volume for persistence** (Step 2): single service for
   now; Redis gets its own service when Step 4's uniqueness deep dive needs it, kept out until then.
+- **`CustomAlias` collapsed into `Code` rather than a separate lookup field** (Step 3): if the caller supplies a
+  custom alias, it becomes the row's `Code` directly (and is also kept in `CustomAlias` as a record that it was
+  user-chosen). `GET /{code}` only ever does one lookup (`WHERE Code = @code`) instead of `Code OR CustomAlias`.
+- **Naive random code generation now, counter-based generation in Step 4** (Step 3): `RandomNumberGenerator
+  .GetString(base62Alphabet, 7)` per create call, no collision handling. This is intentionally the "bad" starting
+  point the reference article describes — Step 4 replaces the generation strategy itself (Redis counter +
+  base62, which cannot collide by construction) rather than bolting retry logic onto random generation.
+- **DB-level unique index on `Code` added now, separately from the generation strategy** (Step 3, new migration
+  `AddUniqueIndexOnShortUrlCode`): uniqueness *enforcement* at the data layer is a baseline integrity concern
+  independent of *how* codes get generated — added regardless of which generation strategy is active. What
+  currently has no handling is the application reacting gracefully when that constraint is violated (see Known
+  limitations above).
+- **`410 Gone` for expired short URLs, `404` for unknown ones** (Step 3): more precise than collapsing both to
+  `404` — `410` communicates "this existed and is intentionally gone," which matters once expiration cleanup
+  (Step 7) is a real feature, not just "we don't have a row."
+- **JSON is camelCase, not the spec's snake_case** (Step 3): ASP.NET Core's default `System.Text.Json` naming
+  policy for controllers is camelCase (`shortUrl`, `longUrl`). Not overridden — camelCase is .NET's own idiomatic
+  default, and there's no reason to fight the framework to match the reference article's snake_case exactly.
 
 ## Update this file
 
