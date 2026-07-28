@@ -61,14 +61,3 @@ dotnet run --project src/Bitly.Api
 ```
 
 Health check: `GET http://localhost:5299/health` (ASP.NET Core's built-in Health Checks middleware)
-
-## Progress log
-
-- [x] **Step 1** — Repo scaffold: solution, `Bitly.Api` (Web API, controllers), `Bitly.Domain` (class library), `/health` endpoint
-- [ ] **Step 2** — Data model + PostgreSQL via Docker Compose + EF Core migrations
-- [ ] **Step 3** — Naive end-to-end create/redirect flow
-- [ ] **Step 4** — Deep dive: uniqueness (Redis counter + base62)
-- [ ] **Step 5** — Deep dive: fast redirects (Redis cache-aside)
-- [ ] **Step 6** — Deep dive: scale (Read/Write service split + local load balancer)
-- [ ] **Step 7** — Round out NFRs (expiration cleanup, alias collisions, rate limiting, logging)
-- [ ] **Step 8** — Full Docker Compose stack + polish

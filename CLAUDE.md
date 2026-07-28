@@ -62,7 +62,16 @@ Health check: `GET /health` → `{"status":"healthy"}` (`src/Bitly.Api/Controlle
 
 ## Step plan status
 
-See the progress log in [README.md](README.md) for the authoritative checklist. Currently on: **Step 1 (scaffold) — done, pending commit/push.**
+- [x] **Step 1** — Repo scaffold: solution, `Bitly.Api` (Web API, controllers), `Bitly.Domain` (class library), `/health` endpoint (built-in Health Checks middleware)
+- [ ] **Step 2** — Data model + PostgreSQL via Docker Compose + EF Core migrations
+- [ ] **Step 3** — Naive end-to-end create/redirect flow
+- [ ] **Step 4** — Deep dive: uniqueness (Redis counter + base62)
+- [ ] **Step 5** — Deep dive: fast redirects (Redis cache-aside)
+- [ ] **Step 6** — Deep dive: scale (Read/Write service split + local load balancer)
+- [ ] **Step 7** — Round out NFRs (expiration cleanup, alias collisions, rate limiting, logging)
+- [ ] **Step 8** — Full Docker Compose stack + polish
+
+Currently on: **Step 1 — done.**
 
 ## Key decisions log
 
