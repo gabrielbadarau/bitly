@@ -1,22 +1,10 @@
-# Bitly Clone — .NET Learning Project
+# Bitly Clone
 
-A URL shortener built step-by-step as a learning project for **.NET 10** and **system design**, following the
+A URL shortener built with **.NET 10**, following the
 [HelloInterview Bitly breakdown](https://www.hellointerview.com/learn/system-design/problem-breakdowns/bitly)
 as the reference spec, deviating deliberately where noted.
 
-I'm a JS/TS/React/Node developer, new to .NET/C# — explanations lean on analogies to that ecosystem where useful.
-
-## How we're working
-
-- **Learning mode.** Concepts and tradeoffs get explained before code gets written — the point is the learning,
-  not just the finished artifact.
-- **Verify, don't assume.** Every step is built and run against the real system before being called done — not
-  "this should work."
-- **Small chunks.** One piece at a time: implement, verify, then decide what's next, rather than planning
-  everything upfront and building it all in one pass.
-- **Zero-cost, local-only.** Everything runs on this machine via Docker (Rancher Desktop). No cloud services.
-- **Living docs.** This README and [CLAUDE.md](CLAUDE.md) are kept current as the project evolves — decisions,
-  gotchas, and progress — not written once and left stale.
+Local-only, zero-cost: everything runs via Docker (Rancher Desktop), no cloud services required.
 
 ## Reference spec summary
 
@@ -59,6 +47,11 @@ src/
   Bitly.Domain/    Domain entities, no external dependencies
 Bitly.slnx         Solution file
 ```
+
+## Prerequisites
+
+- [.NET 10 SDK](https://dotnet.microsoft.com/download)
+- Docker, e.g. via [Rancher Desktop](https://rancherdesktop.io/) (needed from Step 2 onward, for PostgreSQL/Redis)
 
 ## Running locally
 
