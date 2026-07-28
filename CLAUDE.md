@@ -70,6 +70,13 @@ See the progress log in [README.md](README.md) for the authoritative checklist. 
 - **`Bitly.Domain` split from `Bitly.Api` from day one** (Step 1): keeps entities framework-agnostic ahead of Step 2's EF Core work.
 - **Postgres/Redis/Docker deferred to Step 2+** (Step 1): kept the first step to pure scaffolding so the first deep dive is small and focused.
 - **`.slnx` solution format** (Step 1): this is what `dotnet new sln` produces by default on the .NET 10 SDK.
+- **Built-in Health Checks middleware instead of a hand-rolled controller** (Step 1 cleanup): `/health` was
+  originally a `HealthController` returning a manual JSON object. Swapped to `builder.Services.AddHealthChecks()`
+  + `app.MapHealthChecks("/health")` — ASP.NET Core's built-in liveness mechanism, no extra package needed. Returns
+  plain-text `Healthy` by default (not JSON). This matters later: once Postgres/Redis exist, we register a check
+  per dependency (`AddNpgsql()`, etc.) so `/health` reflects real dependency health, not just "process is up" —
+  a controller can't do that without reimplementing the middleware. Controllers remain the pattern for domain
+  resources (`POST /urls`, `GET /{code}`); Health Checks is a framework cross-cutting concern with its own idiom.
 
 ## Update this file
 
