@@ -49,7 +49,8 @@ src/
     Models/          Entities (e.g. ShortUrl)
     Contracts/       Request/response DTOs
     Data/            EF Core DbContext + migrations
-docker-compose.yml    Local PostgreSQL
+    Services/        RedisCodeGenerator (counter-based short code generation)
+docker-compose.yml    Local PostgreSQL + Redis
 Bitly.slnx            Solution file
 ```
 
@@ -61,15 +62,16 @@ Bitly.slnx            Solution file
 ## Running locally
 
 ```bash
-# 1. Start PostgreSQL
+# 1. Start PostgreSQL and Redis
 docker compose up -d
 
 # 2. Restore local tools (EF Core CLI) and apply migrations
 dotnet tool restore
 dotnet ef database update --project src/Bitly.Api
 
-# 3. Configure the connection string (once)
+# 3. Configure connection strings (once)
 dotnet user-secrets set "ConnectionStrings:BitlyDb" "Host=localhost;Port=5432;Database=bitly;Username=bitly;Password=bitly_dev_only" --project src/Bitly.Api
+dotnet user-secrets set "ConnectionStrings:Redis" "localhost:6379" --project src/Bitly.Api
 
 # 4. Run the API
 dotnet build

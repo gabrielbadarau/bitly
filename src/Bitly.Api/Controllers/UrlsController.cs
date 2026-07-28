@@ -1,7 +1,7 @@
-using System.Security.Cryptography;
 using Bitly.Api.Contracts;
 using Bitly.Api.Data;
 using Bitly.Api.Models;
+using Bitly.Api.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -9,11 +9,8 @@ namespace Bitly.Api.Controllers;
 
 [ApiController]
 [Route("urls")]
-public class UrlsController(BitlyDbContext db) : ControllerBase
+public class UrlsController(BitlyDbContext db, RedisCodeGenerator codeGenerator) : ControllerBase
 {
-    private const string Base62Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-    private const int CodeLength = 7;
-
     [HttpPost]
     public async Task<ActionResult<CreateShortUrlResponse>> Create(CreateShortUrlRequest request)
     {
@@ -24,7 +21,7 @@ public class UrlsController(BitlyDbContext db) : ControllerBase
         }
 
         var code = string.IsNullOrWhiteSpace(request.CustomAlias)
-            ? RandomNumberGenerator.GetString(Base62Alphabet, CodeLength)
+            ? await codeGenerator.NextCodeAsync()
             : request.CustomAlias;
 
         var shortUrl = new ShortUrl

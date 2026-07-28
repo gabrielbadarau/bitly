@@ -51,9 +51,10 @@ src/
     Models/            Entities (ShortUrl)
     Contracts/         Request/response DTOs (records)
     Data/              BitlyDbContext + Migrations/
+    Services/          RedisCodeGenerator (Redis INCR + base62 encoding)
 .config/
   dotnet-tools.json     Local tool manifest (dotnet-ef, pinned version)
-docker-compose.yml       Local PostgreSQL (postgres:16-alpine)
+docker-compose.yml       Local PostgreSQL (postgres:16-alpine) + Redis (redis:7-alpine, AOF persistence)
 Bitly.slnx               Solution file (new .slnx format, .NET 9+)
 ```
 
@@ -62,7 +63,7 @@ No separate domain project right now — see Key decisions log for why, and when
 ## Commands
 
 ```bash
-docker compose up -d                                    # start Postgres
+docker compose up -d                                    # start Postgres + Redis
 dotnet tool restore                                      # restore local tools (dotnet-ef), once per clone
 dotnet build
 dotnet run --project src/Bitly.Api                        # serves on the port in launchSettings.json
@@ -74,9 +75,14 @@ dotnet ef database update
 
 Health check: `GET /health` → plain-text `Healthy` (built-in ASP.NET Core Health Checks middleware, `Program.cs`)
 
-Connection string lives in **user-secrets**, not `appsettings.json`:
-`dotnet user-secrets set "ConnectionStrings:BitlyDb" "Host=localhost;Port=5432;Database=bitly;Username=bitly;Password=bitly_dev_only" --project src/Bitly.Api`
-(the `bitly_dev_only` password is only ever used inside the local Docker network — fine to keep in this file and in `docker-compose.yml`, but the connection string itself still stays out of the committed `appsettings.json`/git history as a matter of habit.)
+Connection strings live in **user-secrets**, not `appsettings.json`:
+```bash
+dotnet user-secrets set "ConnectionStrings:BitlyDb" "Host=localhost;Port=5432;Database=bitly;Username=bitly;Password=bitly_dev_only" --project src/Bitly.Api
+dotnet user-secrets set "ConnectionStrings:Redis" "localhost:6379" --project src/Bitly.Api
+```
+(the `bitly_dev_only` password is only ever used inside the local Docker network — fine to keep in this file and in `docker-compose.yml`, but the connection strings themselves still stay out of the committed `appsettings.json`/git history as a matter of habit.)
+
+Inspect the Redis counter directly: `docker exec bitly-redis redis-cli GET shorturl:counter`
 
 Quick manual test of the end-to-end flow:
 
@@ -94,23 +100,35 @@ curl -v http://localhost:5299/<code>
 - [x] **Step 1** — Repo scaffold: solution, `Bitly.Api` (Web API, controllers), `Bitly.Domain` (class library), `/health` endpoint (built-in Health Checks middleware)
 - [x] **Step 2** — Data model + PostgreSQL via Docker Compose + EF Core migrations
 - [x] **Step 3** — Naive end-to-end create/redirect flow
-- [ ] **Step 4** — Deep dive: uniqueness (Redis counter + base62)
+- [x] **Step 4** — Deep dive: uniqueness (Redis counter + base62)
 - [ ] **Step 5** — Deep dive: fast redirects (Redis cache-aside)
 - [ ] **Step 6** — Deep dive: scale (Read/Write service split + local load balancer)
 - [ ] **Step 7** — Round out NFRs (expiration cleanup, alias collisions, rate limiting, logging)
 - [ ] **Step 8** — Full Docker Compose stack + polish
 
-Currently on: **Step 3 — done.**
+Currently on: **Step 4 — done.**
 
-**Known limitations carried forward on purpose** (naive step; later steps address these):
-- No collision handling on create. A duplicate `Code`/`CustomAlias` currently throws an unhandled
-  `DbUpdateException` → raw `500` with a full stack trace leaked to the client (verified live — this is real,
-  not hypothetical). Proper handling (e.g. `409 Conflict` on alias collision, retry-with-new-code on the rare
-  random-code collision) belongs in Step 7's NFR pass; generic exception → problem-details mapping should land
-  there too, not just alias-specific handling.
-- `GET /{code}` is a root-level catch-all route — a short code equal to `health` or `urls` would collide with
-  existing routes. Not addressed yet (naive random codes make this astronomically unlikely at this scale, but
-  it is a real gap, not a hypothetical one).
+**Known limitations carried forward on purpose:**
+- No collision handling on `CustomAlias`. A duplicate alias still throws an unhandled `DbUpdateException` → raw
+  `500` with a full stack trace leaked to the client (verified live in Step 3, still true — the counter only
+  fixed collisions on *generated* codes, not user-supplied aliases). Proper handling (`409 Conflict`, generic
+  exception → problem-details mapping) belongs in Step 7's NFR pass.
+- `GET /{code}` is a root-level catch-all route — a code/alias equal to `health` would silently shadow the
+  health check and become permanently unreachable (verified live in the routing discussion before Step 4). Not
+  addressed yet.
+- **New in Step 4**: counter-generated codes are short and strictly sequential — `1, 2, 3, ...` — which means
+  they are trivially predictable and enumerable. Anyone can walk `/1`, `/2`, `/3`... and discover every
+  short URL ever created, including ones nobody advertised. The reference article explicitly calls this out as
+  an accepted tradeoff of the counter approach, not something it solves. Left as-is for now; a cheap future
+  mitigation would be reversibly scrambling the counter value (e.g. XOR/Feistel) before base62-encoding it, so
+  codes stop being sequential-looking while remaining collision-free and decodable.
+- **New in Step 4**: uniqueness is now only guaranteed if the Redis counter is intact. If Redis data were ever
+  lost despite the AOF persistence (e.g. the volume itself is deleted), the counter restarts at 0 and could
+  hand out a code that already exists in Postgres — which would hit the very same unhandled-`DbUpdateException`
+  gap above. The DB-level unique index (Step 3) is the safety net that turns this into a loud `500` instead of
+  silent data corruption, which is exactly the role the reference article assigns it ("minor data loss
+  acceptable since only uniqueness required; UNIQUE constraint provides safety net") — but a real retry-on-
+  collision path still does not exist yet.
 
 ## Key decisions log
 
@@ -163,6 +181,29 @@ Currently on: **Step 3 — done.**
 - **JSON is camelCase, not the spec's snake_case** (Step 3): ASP.NET Core's default `System.Text.Json` naming
   policy for controllers is camelCase (`shortUrl`, `longUrl`). Not overridden — camelCase is .NET's own idiomatic
   default, and there's no reason to fight the framework to match the reference article's snake_case exactly.
+- **Redis counter (`INCR`) + base62 encoding replaces random generation** (Step 4): matches the reference
+  article's "great solution" for uniqueness — codes cannot collide by construction, since Redis is single-
+  threaded and `INCR` is atomic, so no two concurrent requests can ever receive the same counter value. Verified
+  live: created 5 URLs in a row and got exactly `1, 2, 3, 4, 5`; pushed the counter past 62 and confirmed the
+  base62 rollover math (`63` → `"11"`, i.e. `1×62 + 1`) both in the generated code and by reading the raw
+  counter value straight out of Redis.
+- **Counter batching deferred to Step 6** (Step 4): the article covers reserving blocks of N values at once as
+  an optimization for this same deep dive, but it only pays off once multiple app instances are contending for
+  the same Redis counter concurrently — that is Step 6's (scale) concern, not this one, so implementing it now
+  would add complexity with nothing to demonstrate it against yet.
+- **`RedisCodeGenerator` is a concrete class, no interface** (Step 4): same reasoning as the `Bitly.Domain`
+  reversal in Step 1 — no second implementation exists, no test project to mock against, so an interface would
+  be pure ceremony. Registered as a singleton in DI, same lifetime as `IConnectionMultiplexer` itself.
+- **`IConnectionMultiplexer` registered as a singleton, unlike `BitlyDbContext` (scoped)** (Step 4): StackExchange
+  Redis's own guidance is that `ConnectionMultiplexer` is expensive to create and thread-safe, meant to be shared
+  for the lifetime of the process — the opposite lifetime model from `DbContext`, which is intentionally cheap
+  and per-request/unit-of-work scoped.
+- **Redis persistence: AOF (`--appendonly yes`) + a named volume** (Step 4): without persistence, recreating the
+  Redis container would reset the counter to 0 while Postgres still has rows using codes `1..N` — a real
+  collision risk, not hypothetical, since Redis is now a source of truth for uniqueness, not just a cache.
+  Verified live: restarted the `bitly-redis` container mid-session and confirmed the counter value survived.
+  This does not eliminate the risk entirely (see Known limitations) — it just makes it very unlikely instead of
+  guaranteed on every restart.
 
 ## Update this file
 
