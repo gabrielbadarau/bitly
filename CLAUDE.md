@@ -9,14 +9,30 @@ the HelloInterview Bitly breakdown: https://www.hellointerview.com/learn/system-
 
 Full requirements/data model/API summary lives in [README.md](README.md) — don't duplicate it here, link to it.
 
+User is a JS/TS/React/Node developer, new to .NET/C#. Lean on analogies to that ecosystem when explaining
+.NET-specific concepts (e.g. NuGet ~ npm, middleware pipeline ~ Express middleware, EF Core ~ an ORM like
+Prisma/TypeORM). Don't assume prior exposure to static typing/compilation, C# value vs. reference semantics, or
+the .NET dependency injection container.
+
+## Learning mode ground rules
+
+- **Explain before coding.** Walk through concepts and tradeoffs first — the point is the learning, not just the
+  artifact.
+- **Verify against the real running system before calling anything done.** Build it, run it, show the actual
+  output — not "this should work."
+- **Small chunks.** Implement one piece, verify it, then ask what's next. Don't plan the whole thing upfront and
+  build it all in one pass.
+- **Step-by-step process.** Before making any change, present a short plan/summary in chat and wait for
+  confirmation before touching files or running mutating commands. Keep each step scoped to roughly one concept.
+- After each step: commit, push, then give a deep-dive explanation of what changed and why.
+
 ## Ground rules for this project
 
 - **Local-only, zero-cost.** No cloud services, no paid tiers. Docker via **Rancher Desktop** (not Docker Desktop).
 - **.NET 10.**
-- **Step-by-step process.** Before making any change, present a short plan/summary in chat and wait for
-  confirmation before touching files or running mutating commands. Keep each step scoped to roughly one concept.
-- After each step: commit, push, then give a deep-dive explanation of what changed and why.
 - **Controllers, not Minimal APIs** — user is explicitly learning the Controller-based ASP.NET Core style.
+  (Exception: framework-level cross-cutting concerns like Health Checks use their own idiomatic middleware,
+  not a controller — see Key decisions log.)
 - **No test project for now** — user opted out of tests at this stage of the learning project.
 - **Git identity:** this repo's local `user.name`/`user.email` is set to `Gabriel Badarau <badaraugabriel95@gmail.com>`
   (repo-local config, not global — the machine's global git email is a separate work identity). Never touch global
