@@ -44,7 +44,6 @@ Local-only, zero-cost: everything runs via Docker (Rancher Desktop), no cloud se
 ```
 src/
   Bitly.Api/       ASP.NET Core Web API (controllers)
-  Bitly.Domain/    Domain entities, no external dependencies
 Bitly.slnx         Solution file
 ```
 

@@ -47,9 +47,10 @@ the .NET dependency injection container.
 ```
 src/
   Bitly.Api/       ASP.NET Core Web API, Controllers (not Minimal APIs)
-  Bitly.Domain/    Domain entities/logic, no external dependencies
 Bitly.slnx         Solution file (new .slnx format, .NET 9+)
 ```
+
+No separate domain project right now — see Key decisions log for why, and when to reintroduce one.
 
 ## Commands
 
@@ -58,7 +59,7 @@ dotnet build
 dotnet run --project src/Bitly.Api     # serves on the port in src/Bitly.Api/Properties/launchSettings.json
 ```
 
-Health check: `GET /health` → `{"status":"healthy"}` (`src/Bitly.Api/Controllers/HealthController.cs`)
+Health check: `GET /health` → plain-text `Healthy` (built-in ASP.NET Core Health Checks middleware, `Program.cs`)
 
 ## Step plan status
 
@@ -76,7 +77,13 @@ Currently on: **Step 1 — done.**
 ## Key decisions log
 
 - **Controllers over Minimal APIs** (Step 1): user wants to learn the Controller-based style specifically.
-- **`Bitly.Domain` split from `Bitly.Api` from day one** (Step 1): keeps entities framework-agnostic ahead of Step 2's EF Core work.
+- **No separate `Bitly.Domain` project — collapsed back into `Bitly.Api`** (Step 1 cleanup, reversing an earlier
+  decision): originally split out on day one on the theory that framework-agnostic entities would pay off once
+  Step 6 splits the app into separate Read/Write services sharing domain logic. Reversed because that project was
+  sitting empty with a single consumer and no entities yet — premature structure for a need that doesn't exist
+  yet. Decided instead to advance in steps like a real project would: keep entities in `Bitly.Api` for now, and
+  split out a `Bitly.Domain` project if/when Step 6 actually needs a second consumer. That refactor (move files,
+  add a project reference) is mechanical and cheap to do later, so there's no cost to waiting.
 - **Postgres/Redis/Docker deferred to Step 2+** (Step 1): kept the first step to pure scaffolding so the first deep dive is small and focused.
 - **`.slnx` solution format** (Step 1): this is what `dotnet new sln` produces by default on the .NET 10 SDK.
 - **Built-in Health Checks middleware instead of a hand-rolled controller** (Step 1 cleanup): `/health` was
