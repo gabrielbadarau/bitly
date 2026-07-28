@@ -22,7 +22,7 @@ Local-only, zero-cost: everything runs via Docker (Rancher Desktop), no cloud se
 
 **Data model**
 - `ShortUrl`: code, long URL, created-at, custom alias, expiration date
-- `User`: creator of a short URL
+- `User`: creator of a short URL (omitted in this implementation — auth is out of scope)
 
 **API**
 - `POST /urls` — create a short URL
@@ -43,18 +43,33 @@ Local-only, zero-cost: everything runs via Docker (Rancher Desktop), no cloud se
 
 ```
 src/
-  Bitly.Api/       ASP.NET Core Web API (controllers)
-Bitly.slnx         Solution file
+  Bitly.Api/
+    Controllers/     API endpoints
+    Models/          Entities (e.g. ShortUrl)
+    Data/            EF Core DbContext + migrations
+docker-compose.yml    Local PostgreSQL
+Bitly.slnx            Solution file
 ```
 
 ## Prerequisites
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download)
-- Docker, e.g. via [Rancher Desktop](https://rancherdesktop.io/) (needed from Step 2 onward, for PostgreSQL/Redis)
+- Docker, e.g. via [Rancher Desktop](https://rancherdesktop.io/)
 
 ## Running locally
 
 ```bash
+# 1. Start PostgreSQL
+docker compose up -d
+
+# 2. Restore local tools (EF Core CLI) and apply migrations
+dotnet tool restore
+dotnet ef database update --project src/Bitly.Api
+
+# 3. Configure the connection string (once)
+dotnet user-secrets set "ConnectionStrings:BitlyDb" "Host=localhost;Port=5432;Database=bitly;Username=bitly;Password=bitly_dev_only" --project src/Bitly.Api
+
+# 4. Run the API
 dotnet build
 dotnet run --project src/Bitly.Api
 ```

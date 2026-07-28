@@ -46,8 +46,14 @@ the .NET dependency injection container.
 
 ```
 src/
-  Bitly.Api/       ASP.NET Core Web API, Controllers (not Minimal APIs)
-Bitly.slnx         Solution file (new .slnx format, .NET 9+)
+  Bitly.Api/
+    Controllers/       API endpoints
+    Models/            Entities (ShortUrl)
+    Data/              BitlyDbContext + Migrations/
+.config/
+  dotnet-tools.json     Local tool manifest (dotnet-ef, pinned version)
+docker-compose.yml       Local PostgreSQL (postgres:16-alpine)
+Bitly.slnx               Solution file (new .slnx format, .NET 9+)
 ```
 
 No separate domain project right now — see Key decisions log for why, and when to reintroduce one.
@@ -55,16 +61,26 @@ No separate domain project right now — see Key decisions log for why, and when
 ## Commands
 
 ```bash
+docker compose up -d                                    # start Postgres
+dotnet tool restore                                      # restore local tools (dotnet-ef), once per clone
 dotnet build
-dotnet run --project src/Bitly.Api     # serves on the port in src/Bitly.Api/Properties/launchSettings.json
+dotnet run --project src/Bitly.Api                        # serves on the port in launchSettings.json
+
+# EF Core migrations (run from src/Bitly.Api, or add --project src/Bitly.Api)
+dotnet ef migrations add <Name> --output-dir Data/Migrations
+dotnet ef database update
 ```
 
 Health check: `GET /health` → plain-text `Healthy` (built-in ASP.NET Core Health Checks middleware, `Program.cs`)
 
+Connection string lives in **user-secrets**, not `appsettings.json`:
+`dotnet user-secrets set "ConnectionStrings:BitlyDb" "Host=localhost;Port=5432;Database=bitly;Username=bitly;Password=bitly_dev_only" --project src/Bitly.Api`
+(the `bitly_dev_only` password is only ever used inside the local Docker network — fine to keep in this file and in `docker-compose.yml`, but the connection string itself still stays out of the committed `appsettings.json`/git history as a matter of habit.)
+
 ## Step plan status
 
 - [x] **Step 1** — Repo scaffold: solution, `Bitly.Api` (Web API, controllers), `Bitly.Domain` (class library), `/health` endpoint (built-in Health Checks middleware)
-- [ ] **Step 2** — Data model + PostgreSQL via Docker Compose + EF Core migrations
+- [x] **Step 2** — Data model + PostgreSQL via Docker Compose + EF Core migrations
 - [ ] **Step 3** — Naive end-to-end create/redirect flow
 - [ ] **Step 4** — Deep dive: uniqueness (Redis counter + base62)
 - [ ] **Step 5** — Deep dive: fast redirects (Redis cache-aside)
@@ -72,7 +88,7 @@ Health check: `GET /health` → plain-text `Healthy` (built-in ASP.NET Core Heal
 - [ ] **Step 7** — Round out NFRs (expiration cleanup, alias collisions, rate limiting, logging)
 - [ ] **Step 8** — Full Docker Compose stack + polish
 
-Currently on: **Step 1 — done.**
+Currently on: **Step 2 — done.**
 
 ## Key decisions log
 
@@ -93,6 +109,20 @@ Currently on: **Step 1 — done.**
   per dependency (`AddNpgsql()`, etc.) so `/health` reflects real dependency health, not just "process is up" —
   a controller can't do that without reimplementing the middleware. Controllers remain the pattern for domain
   resources (`POST /urls`, `GET /{code}`); Health Checks is a framework cross-cutting concern with its own idiom.
+- **`User` entity skipped** (Step 2): the reference spec's data model includes a `User` (creator), but auth is
+  explicitly out of scope in the functional requirements. Modeled only `ShortUrl` for now; adding `User` later
+  (if auth ever gets added) is a small, additive change — no need to build it speculatively.
+- **`dotnet-ef` as a local tool, not a global install** (Step 2): `dotnet new tool-manifest` + `dotnet tool install
+  dotnet-ef` pins the exact version in `.config/dotnet-tools.json` (committed), similar to a `devDependency` in a
+  `package.json` vs. a global `npm install -g`. Anyone cloning the repo runs `dotnet tool restore` once. Note:
+  `dotnet new tool-manifest` created the file at the repo root by default — moved it to the conventional
+  `.config/dotnet-tools.json` path by hand so `dotnet tool restore` finds it automatically.
+- **Connection string via `dotnet user-secrets`, not `appsettings.json`** (Step 2): keeps it out of the committed
+  files/git history as a matter of habit, even though this Postgres instance is fully local. Equivalent to a
+  gitignored `.env.local` in a Node project — secrets live outside the repo (`~/.microsoft/usersecrets/<id>/`),
+  referenced only by the `<UserSecretsId>` GUID in the `.csproj` (that GUID itself is not sensitive).
+- **`postgres:16-alpine` via `docker-compose.yml`, named volume for persistence** (Step 2): single service for
+  now; Redis gets its own service when Step 4's uniqueness deep dive needs it, kept out until then.
 
 ## Update this file
 
