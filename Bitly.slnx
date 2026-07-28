@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Bitly.Api/Bitly.Api.csproj" />
+    <Project Path="src/Bitly.Domain/Bitly.Domain.csproj" />
+  </Folder>
+</Solution>
