@@ -49,7 +49,8 @@ src/
     Models/          Entities (e.g. ShortUrl)
     Contracts/       Request/response DTOs
     Data/            EF Core DbContext + migrations
-    Services/        RedisCodeGenerator (counter-based short code generation)
+    Services/        RedisCodeGenerator (counter-based short code generation),
+                     ShortUrlCache (cache-aside layer for redirects)
 docker-compose.yml    Local PostgreSQL + Redis
 Bitly.slnx            Solution file
 ```

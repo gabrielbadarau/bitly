@@ -9,7 +9,7 @@ namespace Bitly.Api.Controllers;
 
 [ApiController]
 [Route("urls")]
-public class UrlsController(BitlyDbContext db, RedisCodeGenerator codeGenerator) : ControllerBase
+public class UrlsController(BitlyDbContext db, RedisCodeGenerator codeGenerator, ShortUrlCache cache) : ControllerBase
 {
     [HttpPost]
     public async Task<ActionResult<CreateShortUrlResponse>> Create(CreateShortUrlRequest request)
@@ -43,6 +43,12 @@ public class UrlsController(BitlyDbContext db, RedisCodeGenerator codeGenerator)
     [HttpGet("/{code}")]
     public async Task<IActionResult> RedirectToLongUrl(string code)
     {
+        var cachedLongUrl = await cache.GetAsync(code);
+        if (cachedLongUrl is not null)
+        {
+            return Redirect(cachedLongUrl);
+        }
+
         var shortUrl = await db.ShortUrls.FirstOrDefaultAsync(s => s.Code == code);
 
         if (shortUrl is null)
@@ -54,6 +60,8 @@ public class UrlsController(BitlyDbContext db, RedisCodeGenerator codeGenerator)
         {
             return StatusCode(StatusCodes.Status410Gone);
         }
+
+        await cache.SetAsync(shortUrl.Code, shortUrl.LongUrl, shortUrl.ExpirationDate);
 
         return Redirect(shortUrl.LongUrl);
     }

@@ -51,7 +51,8 @@ src/
     Models/            Entities (ShortUrl)
     Contracts/         Request/response DTOs (records)
     Data/              BitlyDbContext + Migrations/
-    Services/          RedisCodeGenerator (Redis INCR + base62 encoding)
+    Services/          RedisCodeGenerator (Redis INCR + base62 encoding),
+                       ShortUrlCache (cache-aside layer: GetAsync/SetAsync, TTL = ExpirationDate or 24h default)
 .config/
   dotnet-tools.json     Local tool manifest (dotnet-ef, pinned version)
 docker-compose.yml       Local PostgreSQL (postgres:16-alpine) + Redis (redis:7-alpine, AOF persistence)
@@ -84,6 +85,9 @@ dotnet user-secrets set "ConnectionStrings:Redis" "localhost:6379" --project src
 
 Inspect the Redis counter directly: `docker exec bitly-redis redis-cli GET shorturl:counter`
 
+Inspect a cached redirect directly: `docker exec bitly-redis redis-cli GET shorturl:code:<code>` and
+`... TTL shorturl:code:<code>` (seconds until Redis auto-evicts it)
+
 Quick manual test of the end-to-end flow:
 
 ```bash
@@ -101,12 +105,12 @@ curl -v http://localhost:5299/<code>
 - [x] **Step 2** — Data model + PostgreSQL via Docker Compose + EF Core migrations
 - [x] **Step 3** — Naive end-to-end create/redirect flow
 - [x] **Step 4** — Deep dive: uniqueness (Redis counter + base62)
-- [ ] **Step 5** — Deep dive: fast redirects (Redis cache-aside)
+- [x] **Step 5** — Deep dive: fast redirects (Redis cache-aside)
 - [ ] **Step 6** — Deep dive: scale (Read/Write service split + local load balancer)
 - [ ] **Step 7** — Round out NFRs (expiration cleanup, alias collisions, rate limiting, logging)
 - [ ] **Step 8** — Full Docker Compose stack + polish
 
-Currently on: **Step 4 — done.**
+Currently on: **Step 5 — done.**
 
 **Known limitations carried forward on purpose:**
 - No collision handling on `CustomAlias`. A duplicate alias still throws an unhandled `DbUpdateException` → raw
@@ -129,6 +133,12 @@ Currently on: **Step 4 — done.**
   silent data corruption, which is exactly the role the reference article assigns it ("minor data loss
   acceptable since only uniqueness required; UNIQUE constraint provides safety net") — but a real retry-on-
   collision path still does not exist yet.
+- **New in Step 5**: no negative caching. A request for a code that does not exist always falls through to
+  Postgres, every time - a real "cache penetration" pattern (repeatedly requesting missing keys bypasses the
+  cache entirely). Not addressed now; would pair naturally with Step 7's rate limiting.
+- **New in Step 5**: Redis has no `maxmemory`/eviction policy configured, so its default is `noeviction` - under
+  memory pressure it would reject writes rather than evict anything. Not a real risk at local/dev scale, but a
+  genuine Step 6 (scale) concern once the dataset is large enough for cache memory to matter.
 
 ## Key decisions log
 
@@ -204,6 +214,32 @@ Currently on: **Step 4 — done.**
   Verified live: restarted the `bitly-redis` container mid-session and confirmed the counter value survived.
   This does not eliminate the risk entirely (see Known limitations) — it just makes it very unlikely instead of
   guaranteed on every restart.
+- **Cache-aside on the redirect path, not write-through** (Step 5): `GET /{code}` checks Redis first; on a miss
+  it queries Postgres and populates the cache for next time. `POST /urls` does not touch the cache at all - the
+  first reader for a given code pays the cache-miss cost, matching the article's description of the pattern
+  exactly. Verified this is genuinely cache-aside and not accidentally write-through: the cache key did not
+  exist immediately after create, only after the first `GET`.
+- **Redis key TTL aligned to `ExpirationDate` instead of re-checking expiration on every cache hit** (Step 5):
+  when a `ShortUrl` has an `ExpirationDate`, the cache key's TTL is set to exactly that remaining duration, so
+  Redis evicts it automatically at the right moment - a cache hit can be trusted as "still valid" with no extra
+  logic. Rows with no `ExpirationDate` get a 24h default TTL purely to bound memory over time, not for
+  correctness. Verified live end to end: created a link expiring in 5s, confirmed its cache TTL was `5` (not the
+  24h default), waited for it to lapse, confirmed Redis had evicted the key, and confirmed the next request fell
+  through to Postgres and correctly returned `410` rather than serving a stale cached redirect.
+- **Proved a cache hit actually bypasses Postgres, not just "looks correct"** (Step 5): deleted a `ShortUrl` row
+  directly from Postgres via `psql` after it was cached, then confirmed the redirect still worked - which is
+  only possible if the response came from Redis, since the database row no longer existed.
+- **`maxmemory`/LRU eviction policy deliberately not configured** (Step 5, discussed before implementing): Redis
+  has built-in approximated-LRU eviction (`maxmemory-policy allkeys-lru`, one config line, no application code)
+  as a distinct mechanism from the TTL used here - TTL enforces "must expire at time X regardless of memory,"
+  LRU eviction handles "running low on memory, drop what's least-used." Skipped for now since our dataset is far
+  too small locally to ever hit a memory cap; real candidate for Step 6 once cache size is a genuine concern.
+- **Latency measured before and after, not assumed** (Step 5): baseline (uncached, Postgres-per-request)
+  steady-state was ~2.6-3.7ms per redirect; cached path measured ~1.8ms average - a real but modest ~40%
+  reduction. Explicitly not claiming the article's dramatic memory-vs-disk numbers here: this is a local
+  Postgres with no network hop and a handful of rows, so there is little latency to remove in the first place.
+  The mechanism is correct and the improvement is real and measured, just smaller than the article's numbers
+  would suggest at a scale we are not actually operating at.
 
 ## Update this file
 
