@@ -65,27 +65,38 @@ Bitly.slnx             Solution file
 
 ## Running locally
 
-```bash
-# 1. Start PostgreSQL, Redis, and the load balancer
-docker compose up -d
+**Option 1 — full stack via Docker (recommended)**
 
-# 2. Restore local tools (EF Core CLI) and apply migrations
+```bash
+dotnet tool restore
+docker compose up -d postgres redis
+dotnet ef database update --project src/Bitly.Domain --startup-project src/Bitly.WriteApi
+
+docker compose up -d --build
+```
+
+Everything - Postgres, Redis, nginx, the Write service, and two Read instances - builds and starts with that
+last command. The whole API is reachable through the gateway at `http://localhost:8080`; individual instances
+are also directly reachable at `5299` (Write) and `5300`/`5301` (Read) for debugging.
+
+**Option 2 — run the .NET services directly on the host** (faster edit/rebuild loop while developing)
+
+```bash
+docker compose up -d postgres redis
 dotnet tool restore
 dotnet ef database update --project src/Bitly.Domain --startup-project src/Bitly.WriteApi
 
-# 3. Configure connection strings (once per service)
 dotnet user-secrets set "ConnectionStrings:BitlyDb" "Host=localhost;Port=5432;Database=bitly;Username=bitly;Password=bitly_dev_only" --project src/Bitly.WriteApi
 dotnet user-secrets set "ConnectionStrings:Redis" "localhost:6379" --project src/Bitly.WriteApi
 dotnet user-secrets set "ConnectionStrings:BitlyDb" "Host=localhost;Port=5432;Database=bitly;Username=bitly;Password=bitly_dev_only" --project src/Bitly.ReadApi
 dotnet user-secrets set "ConnectionStrings:Redis" "localhost:6379" --project src/Bitly.ReadApi
 
-# 4. Run the Write service and at least one Read service instance (separate terminals);
-#    bind to 0.0.0.0, not localhost, so the nginx container can reach them
-dotnet run --project src/Bitly.WriteApi --urls http://0.0.0.0:5299                        # POST /urls
-INSTANCE_NAME=read-a dotnet run --project src/Bitly.ReadApi --urls http://0.0.0.0:5300     # GET /{code}
-INSTANCE_NAME=read-b dotnet run --project src/Bitly.ReadApi --urls http://0.0.0.0:5301     # a 2nd instance, optional
+dotnet run --project src/Bitly.WriteApi --urls http://localhost:5299                        # POST /urls
+INSTANCE_NAME=read-a dotnet run --project src/Bitly.ReadApi --urls http://localhost:5300     # GET /{code}
 ```
 
-Visit redirects through the load balancer at `http://localhost:8080/<code>` (round-robins across Read instances).
+This path hits each service directly (`5299`, `5300`) rather than through nginx - the gateway routes by Docker
+Compose service name, so it can't reach processes running outside Docker. To test the load-balanced/gateway
+topology itself, use Option 1.
 
 Health check: `GET /health` on any service (ASP.NET Core's built-in Health Checks middleware)

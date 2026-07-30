@@ -67,28 +67,40 @@ Bitly.slnx               Solution file (new .slnx format, .NET 9+)
 
 ## Commands
 
+**Option 1 - full stack via Docker (recommended, matches production topology):**
 ```bash
-docker compose up -d                                    # start Postgres + Redis + nginx (load balancer, :8080)
-dotnet tool restore                                      # restore local tools (dotnet-ef), once per clone
-dotnet build
-dotnet run --project src/Bitly.WriteApi --urls http://0.0.0.0:5299                        # POST /urls
-INSTANCE_NAME=read-a dotnet run --project src/Bitly.ReadApi --urls http://0.0.0.0:5300     # GET /{code}
-INSTANCE_NAME=read-b dotnet run --project src/Bitly.ReadApi --urls http://0.0.0.0:5301     # 2nd instance, for the LB
+dotnet tool restore
+docker compose up -d postgres redis
+dotnet ef database update --project src/Bitly.Domain --startup-project src/Bitly.WriteApi
+docker compose up -d --build    # builds+starts write-api, read-api-1, read-api-2, and nginx too
+```
+Everything is then reachable through the gateway at `http://localhost:8080`. Individual containers remain
+directly reachable at `5299`/`5300`/`5301` for debugging.
 
+**Option 2 - run the .NET services directly on the host (faster edit/rebuild loop):**
+```bash
+docker compose up -d postgres redis
+dotnet run --project src/Bitly.WriteApi --urls http://localhost:5299
+INSTANCE_NAME=read-a dotnet run --project src/Bitly.ReadApi --urls http://localhost:5300
+```
+This talks directly to `5299`/`5300`, bypassing nginx entirely - since Step 8, `nginx.conf` routes by Compose
+*service name* (`write-api:8080`, `read-api-1:8080`), so it cannot reach a process running outside Docker. To
+exercise the actual gateway/load-balanced topology, use Option 1 instead. (Before Step 8, this mixed mode - LB
+in Docker, services on the host - was the only way it worked, via `host.docker.internal`; that no longer
+applies now that the services are containerized too.)
+
+```bash
 # EF Core migrations - Domain has no Program.cs/connection string of its own,
 # so WriteApi is used as the --startup-project
 dotnet ef migrations add <Name> --project src/Bitly.Domain --startup-project src/Bitly.WriteApi --output-dir Data/Migrations
 dotnet ef database update --project src/Bitly.Domain --startup-project src/Bitly.WriteApi
 ```
 
-Redirects through the load balancer: `http://localhost:8080/<code>` (nginx round-robins across whichever
-`Bitly.ReadApi` instances are running on 5300/5301). Bind services to `0.0.0.0`, not `localhost` - the nginx
-container reaches them via `host.docker.internal`, which cannot connect to a port only bound to loopback.
-
 Health check: `GET /health` → plain-text `Healthy` on either service (built-in ASP.NET Core Health Checks middleware)
 
-Connection strings live in **user-secrets**, not `appsettings.json` - each service has its own secrets store, same
-values:
+For Option 2 (host-run), connection strings live in **user-secrets**, not `appsettings.json` - each service has
+its own secrets store, same values. (Option 1/Docker uses environment variables in `docker-compose.yml` instead
+- see Key decisions log for why `user-secrets` cannot work inside a container at all.)
 ```bash
 dotnet user-secrets set "ConnectionStrings:BitlyDb" "Host=localhost;Port=5432;Database=bitly;Username=bitly;Password=bitly_dev_only" --project src/Bitly.WriteApi
 dotnet user-secrets set "ConnectionStrings:Redis" "localhost:6379" --project src/Bitly.WriteApi
@@ -126,9 +138,9 @@ curl -v http://localhost:8080/<code>
 - [x] **Step 5** — Deep dive: fast redirects (Redis cache-aside)
 - [x] **Step 6** — Deep dive: scale (Read/Write service split + local load balancer)
 - [x] **Step 7** — Round out NFRs (expiration cleanup, alias collisions, rate limiting, logging)
-- [ ] **Step 8** — Full Docker Compose stack + polish
+- [x] **Step 8** — Full Docker Compose stack + polish
 
-Currently on: **Step 8, part 2 of 3 (nginx as a real API gateway) — done.**
+Currently on: **Step 8 — done. The full step plan is complete.**
 
 **Known limitations carried forward on purpose:**
 - **New in Step 4**: counter-generated codes are short and strictly sequential — `1, 2, 3, ...` — which means
@@ -466,6 +478,22 @@ Currently on: **Step 8, part 2 of 3 (nginx as a real API gateway) — done.**
   internal-only. Chose to keep direct access instead, since this whole project has relied on curling individual
   instances directly for verification throughout - convenient for continued learning/debugging outweighs
   matching the stricter topology exactly. Worth knowing this tradeoff was a deliberate choice, not an oversight.
+- **Added `curl` to the runtime image and real Docker-level healthchecks for all three .NET services, plus
+  `depends_on: condition: service_healthy` from nginx onto them** (Step 8, final part): the minimal
+  `aspnet:10.0` runtime image has no `curl`/`wget`/`nc` at all - confirmed live before deciding anything.
+  Installing `curl` via `apt-get` costs a small image-size increase in exchange for a real, meaningful
+  HTTP-level check (matching what Postgres/Redis already had) and lets nginx wait for genuine readiness rather
+  than just "the container started." Verified with a full cold `docker compose down` + `up`: the dependency
+  chain executed correctly end to end - Postgres/Redis healthy first, then all three .NET services healthy,
+  only then nginx starting - eliminating any chance of transient `502`s while the app services are still
+  booting. Considered but rejected a lighter option first (`nc`/raw TCP check) since it would only prove a
+  port is open, not that the app is actually healthy.
+- **Docs restructured around two genuinely separate workflows, not one blended path** (Step 8, final part):
+  Option 1 (full Docker, `docker compose up -d --build`) exercises the real gateway/load-balanced topology.
+  Option 2 (`dotnet run` directly on the host) hits `5299`/`5300` directly, bypassing nginx entirely - mixing
+  the two (nginx in Docker, services on the host) is no longer possible now that `nginx.conf` routes by Compose
+  service name rather than `host.docker.internal`, so pretending otherwise in the docs would have been
+  actively misleading rather than just incomplete.
 
 ## Update this file
 
