@@ -52,7 +52,8 @@ src/
   Bitly.WriteApi/       ASP.NET Core Web API - port 5299
     Controllers/       UrlsController (POST /urls only)
     Contracts/         Request/response DTOs (records)
-    Services/          RedisCodeGenerator (Redis INCR + base62 encoding)
+    Services/          RedisCodeGenerator (Redis INCR + base62 encoding),
+                       ExpiredShortUrlCleanupService (BackgroundService, periodic bulk delete)
   Bitly.ReadApi/        ASP.NET Core Web API - port 5300
     Controllers/       RedirectController (GET /{code} only)
     Services/          ShortUrlCache (cache-aside layer: GetAsync/SetAsync, TTL = ExpirationDate or 24h default)
@@ -126,7 +127,7 @@ curl -v http://localhost:8080/<code>
 - [ ] **Step 7** — Round out NFRs (expiration cleanup, alias collisions, rate limiting, logging)
 - [ ] **Step 8** — Full Docker Compose stack + polish
 
-Currently on: **Step 7, part 2 of 5 (reserved-word validation) — done.**
+Currently on: **Step 7, part 3 of 5 (expiration cleanup) — done.**
 
 **Known limitations carried forward on purpose:**
 - **New in Step 4**: counter-generated codes are short and strictly sequential — `1, 2, 3, ...` — which means
@@ -354,6 +355,35 @@ Currently on: **Step 7, part 2 of 5 (reserved-word validation) — done.**
   `StringComparer.OrdinalIgnoreCase` and blocks every casing, not just the literal lowercase word. The reserved
   list currently only needs `"health"`, since that is the only literal route `Bitly.ReadApi` has today; it would
   need updating if a future step ever adds another literal route there.
+- **`ExpiredShortUrlCleanupService` as a `BackgroundService` in `Bitly.WriteApi`, using `IServiceScopeFactory`**
+  (Step 7): a `BackgroundService` is registered as a singleton for the app's whole lifetime, but `BitlyDbContext`
+  is registered scoped - a scoped service cannot be injected directly into a singleton's constructor. The fix is
+  the standard .NET pattern: inject `IServiceScopeFactory` instead, and create a fresh scope (and therefore a
+  fresh `BitlyDbContext`) on every cleanup cycle via `scopeFactory.CreateScope()`.
+- **`ExecuteDeleteAsync` instead of load-then-remove** (Step 7): translates directly to one SQL `DELETE ...
+  WHERE ...` statement (confirmed live in the query log) rather than pulling every expired row into memory with
+  `ToListAsync()` first, calling `RemoveRange`, then `SaveChangesAsync` - an EF Core 7+ bulk-operation API worth
+  knowing about specifically because the naive load-then-remove approach doesn't scale once the expired-row
+  count is large.
+- **Cleanup interval configurable via `ExpirationCleanup:IntervalSeconds`** (default 300s), overridable via the
+  `ExpirationCleanup__IntervalSeconds` environment variable (double underscore is .NET configuration's convention
+  for binding env vars to nested config keys) - used a 5s override during verification instead of waiting on the
+  real default.
+- **Real bug found and fixed during this step verification, unrelated to the cleanup job itself**: the very
+  first live test crashed `POST /urls` with `System.ArgumentException: Cannot write DateTime with Kind=Local to
+  PostgreSQL type 'timestamp with time zone'`. Cause: the test used Python's `.isoformat()` to generate the
+  expiration timestamp, which produces a numeric UTC offset (`...+00:00`) rather than a `Z` suffix.
+  `System.Text.Json`'s default `DateTime` parsing treats these differently - `Z` becomes `DateTimeKind.Utc`
+  directly, but a numeric offset converts the value to local time and tags it `DateTimeKind.Local`; a bare
+  timestamp with no offset at all comes through as `DateTimeKind.Unspecified`. Npgsql only accepts `Utc` for a
+  `timestamp with time zone` column. This was a real, pre-existing gap (any client sending a perfectly valid
+  ISO-8601 UTC timestamp in offset form would have crashed create), not something specific to this feature -
+  fixed with a `NormalizeToUtc` helper in `UrlsController` that converts `Local` values with `ToUniversalTime()`
+  and reinterprets `Unspecified` values as UTC via `DateTime.SpecifyKind`. Verified live: the exact request that
+  crashed before now succeeds, and the resulting row expires and gets cleaned up correctly.
+- **Verified the cleanup job does not touch valid rows** (Step 7): created one `ShortUrl` with no expiration and
+  one expiring a day out, waited through two 5s cleanup cycles, confirmed both rows still exist - the `WHERE
+  "ExpirationDate" IS NOT NULL AND "ExpirationDate" <= now()` filter is not accidentally broad.
 
 ## Update this file
 

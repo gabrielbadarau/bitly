@@ -26,9 +26,11 @@ Local-only, zero-cost: everything runs via Docker (Rancher Desktop), no cloud se
 
 **API**
 - `POST /urls` (Write service) — create a short URL (`{ longUrl, customAlias?, expirationDate? }` → `{ shortUrl }`;
-  JSON fields are camelCase, .NET's default, rather than the reference spec's snake_case)
+  JSON fields are camelCase, .NET's default, rather than the reference spec's snake_case). `400` for an invalid
+  URL or a reserved alias, `409` if the code/alias is already in use.
 - `GET /{code}` (Read service) — `302` redirect to the original URL, `404` if unknown, `410` if past its
-  expiration date
+  expiration date. Expired rows are also purged from the database periodically by a background job, not just
+  hidden from reads.
 
 **Deep dives covered by the reference article** (built incrementally in this repo):
 1. **Uniqueness** — hash+base62 vs. a Redis-backed global counter with base62 encoding
@@ -48,7 +50,8 @@ Local-only, zero-cost: everything runs via Docker (Rancher Desktop), no cloud se
 ```
 src/
   Bitly.Domain/       Shared entity (ShortUrl) + EF Core DbContext + migrations
-  Bitly.WriteApi/      POST /urls - code generation (RedisCodeGenerator, batched counter)
+  Bitly.WriteApi/      POST /urls - code generation (RedisCodeGenerator, batched counter),
+                       expired-row cleanup (ExpiredShortUrlCleanupService, background job)
   Bitly.ReadApi/       GET /{code} - redirects (ShortUrlCache, cache-aside)
 nginx/nginx.conf       Load balancer config (round-robins across Read service instances)
 docker-compose.yml     Local PostgreSQL + Redis + nginx

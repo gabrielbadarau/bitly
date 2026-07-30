@@ -13,6 +13,7 @@ builder.Services.AddDbContext<BitlyDbContext>(options =>
 builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
     ConnectionMultiplexer.Connect(builder.Configuration.GetConnectionString("Redis")!));
 builder.Services.AddSingleton<RedisCodeGenerator>();
+builder.Services.AddHostedService<ExpiredShortUrlCleanupService>();
 
 var app = builder.Build();
 

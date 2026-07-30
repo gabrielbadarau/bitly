@@ -41,7 +41,7 @@ public class UrlsController(BitlyDbContext db, RedisCodeGenerator codeGenerator,
             LongUrl = request.LongUrl,
             CreatedAt = DateTime.UtcNow,
             CustomAlias = request.CustomAlias,
-            ExpirationDate = request.ExpirationDate,
+            ExpirationDate = NormalizeToUtc(request.ExpirationDate),
         };
 
         db.ShortUrls.Add(shortUrl);
@@ -58,4 +58,16 @@ public class UrlsController(BitlyDbContext db, RedisCodeGenerator codeGenerator,
         var shortUrlValue = $"{configuration["PublicBaseUrl"]}/{shortUrl.Code}";
         return Created(shortUrlValue, new CreateShortUrlResponse(shortUrlValue));
     }
+
+    // System.Text.Json parses "...Z" as Kind=Utc directly, but a numeric offset like "...+00:00"
+    // (e.g. Python's isoformat()) converts to local time and tags it Kind=Local - and a bare
+    // timestamp with no offset at all comes through as Kind=Unspecified. Npgsql only accepts Utc
+    // for a "timestamp with time zone" column, so every case must be normalized explicitly here.
+    private static DateTime? NormalizeToUtc(DateTime? value) => value?.Kind switch
+    {
+        null => null,
+        DateTimeKind.Utc => value,
+        DateTimeKind.Local => value.Value.ToUniversalTime(),
+        _ => DateTime.SpecifyKind(value.Value, DateTimeKind.Utc),
+    };
 }
