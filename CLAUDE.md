@@ -126,12 +126,9 @@ curl -v http://localhost:8080/<code>
 - [ ] **Step 7** — Round out NFRs (expiration cleanup, alias collisions, rate limiting, logging)
 - [ ] **Step 8** — Full Docker Compose stack + polish
 
-Currently on: **Step 7, part 1 of 5 (safe error handling) — done.**
+Currently on: **Step 7, part 2 of 5 (reserved-word validation) — done.**
 
 **Known limitations carried forward on purpose:**
-- `GET /{code}` is a root-level catch-all route — a code/alias equal to `health` would silently shadow the
-  health check and become permanently unreachable (verified live in the routing discussion before Step 4). Not
-  addressed yet.
 - **New in Step 4**: counter-generated codes are short and strictly sequential — `1, 2, 3, ...` — which means
   they are trivially predictable and enumerable. Anyone can walk `/1`, `/2`, `/3`... and discover every
   short URL ever created, including ones nobody advertised. The reference article explicitly calls this out as
@@ -349,6 +346,14 @@ Currently on: **Step 7, part 1 of 5 (safe error handling) — done.**
   response. Notable, verified behavior: this suppressed ASP.NET Core's automatic Development-mode diagnostic
   page too, not just Production's - explicitly configuring exception handling takes precedence over the
   framework's default Development behavior, not just supplementing it.
+- **Reserved-word check on `CustomAlias`, case-insensitive** (Step 7): closes the gap first proven live in the
+  routing discussion before Step 4, where a custom alias `"health"` silently shadowed `Bitly.ReadApi`'s own
+  `/health` endpoint and became permanently unreachable. `UrlsController` now rejects `"health"` (`400`) before
+  ever reaching the database. Verified live first that ASP.NET Core route matching is case-insensitive by
+  default - `GET /HEALTH` still hit the health check, not the redirect catch-all - so the check uses
+  `StringComparer.OrdinalIgnoreCase` and blocks every casing, not just the literal lowercase word. The reserved
+  list currently only needs `"health"`, since that is the only literal route `Bitly.ReadApi` has today; it would
+  need updating if a future step ever adds another literal route there.
 
 ## Update this file
 
