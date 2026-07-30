@@ -124,10 +124,10 @@ curl -v http://localhost:8080/<code>
 - [x] **Step 4** — Deep dive: uniqueness (Redis counter + base62)
 - [x] **Step 5** — Deep dive: fast redirects (Redis cache-aside)
 - [x] **Step 6** — Deep dive: scale (Read/Write service split + local load balancer)
-- [ ] **Step 7** — Round out NFRs (expiration cleanup, alias collisions, rate limiting, logging)
+- [x] **Step 7** — Round out NFRs (expiration cleanup, alias collisions, rate limiting, logging)
 - [ ] **Step 8** — Full Docker Compose stack + polish
 
-Currently on: **Step 7, part 4 of 5 (rate limiting) — done.**
+Currently on: **Step 7 — done.**
 
 **Known limitations carried forward on purpose:**
 - **New in Step 4**: counter-generated codes are short and strictly sequential — `1, 2, 3, ...` — which means
@@ -139,11 +139,13 @@ Currently on: **Step 7, part 4 of 5 (rate limiting) — done.**
   collision-free and decodable.
 - **New in Step 4**: uniqueness is now only guaranteed if the Redis counter is intact. If Redis data were ever
   lost despite the AOF persistence (e.g. the volume itself is deleted), the counter restarts at 0 and could
-  hand out a code that already exists in Postgres — which would hit the very same unhandled-`DbUpdateException`
-  gap above. The DB-level unique index (Step 3) is the safety net that turns this into a loud `500` instead of
-  silent data corruption, which is exactly the role the reference article assigns it ("minor data loss
-  acceptable since only uniqueness required; UNIQUE constraint provides safety net") — but a real retry-on-
-  collision path still does not exist yet.
+  hand out a code that already exists in Postgres. As of Step 7 this now surfaces as a clean `409 Conflict`
+  rather than a raw `500` (the unique-violation catch in `UrlsController` applies to any cause, not just
+  duplicate custom aliases) - genuinely better than before, but still not fully solved: the create simply fails
+  instead of silently succeeding with a fresh code, since there is still no retry-with-a-new-code path. The
+  DB-level unique index (Step 3) remains the safety net making this loud instead of silent, exactly the role
+  the reference article assigns it ("minor data loss acceptable since only uniqueness required; UNIQUE
+  constraint provides safety net").
 - **New in Step 5**: no negative caching. A request for a code that does not exist always falls through to
   Postgres, every time - a real "cache penetration" pattern (repeatedly requesting missing keys bypasses the
   cache entirely). Step 7's rate limiting on `GET /{code}` (20 req/10s per IP) partially mitigates the impact of
@@ -396,6 +398,19 @@ Currently on: **Step 7, part 4 of 5 (rate limiting) — done.**
   attributed the `[EnableRateLimiting]` policy, since load balancers and monitoring need to reach it freely.
   Verified live on both services: exactly `PermitLimit` requests succeed, the next ones get `429`, `/health`
   stays unaffected throughout, and a fresh request succeeds again once the 10s window elapses.
+- **Structured logging via `ILogger<T>` message templates, not string interpolation** (Step 7, final part):
+  `logger.LogInformation("Created short URL {Code} for {LongUrl}", code, request.LongUrl)` instead of
+  `$"Created short URL {code}..."`. The difference is not just style - a template's placeholders are captured by
+  the logging system as separate, individually-queryable fields, distinct from the rendered message string.
+  Verified live by temporarily running with `Logging__Console__FormatterName=json`: the raw log line showed
+  `"State":{"Code":"1Zt","LongUrl":"https://...", "{OriginalFormat}":"..."}` - `Code` and `LongUrl` exist as real
+  separate JSON properties, not just substituted into flattened text. A log aggregation system (Seq, Application
+  Insights, Elasticsearch) can filter on `Code` directly; plain string interpolation would make that field not
+  exist at all. JSON console formatting was only used for this verification, not made the default - plain text
+  remains more readable for local dev; a real deployment would pick a structured sink deliberately.
+  Log points added: `Bitly.WriteApi.Controllers.UrlsController` (create succeeded, reserved-alias rejection,
+  duplicate rejection - the latter two at `Warning`), `Bitly.ReadApi.Controllers.RedirectController` (cache
+  hit, cache miss, not-found, expired - all confirmed live to fire on the correct path).
 
 ## Update this file
 

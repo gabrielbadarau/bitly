@@ -11,8 +11,11 @@ namespace Bitly.WriteApi.Controllers;
 
 [ApiController]
 [Route("urls")]
-public class UrlsController(BitlyDbContext db, RedisCodeGenerator codeGenerator, IConfiguration configuration)
-    : ControllerBase
+public class UrlsController(
+    BitlyDbContext db,
+    RedisCodeGenerator codeGenerator,
+    IConfiguration configuration,
+    ILogger<UrlsController> logger) : ControllerBase
 {
     // ASP.NET Core route matching is case-insensitive, so "/HEALTH" also reaches the health check -
     // block every casing a caller might try, not just the literal lowercase word.
@@ -30,6 +33,7 @@ public class UrlsController(BitlyDbContext db, RedisCodeGenerator codeGenerator,
 
         if (!string.IsNullOrWhiteSpace(request.CustomAlias) && ReservedCodes.Contains(request.CustomAlias))
         {
+            logger.LogWarning("Rejected reserved alias {Alias}", request.CustomAlias);
             return BadRequest($"'{request.CustomAlias}' is a reserved word and cannot be used as a custom alias.");
         }
 
@@ -54,8 +58,11 @@ public class UrlsController(BitlyDbContext db, RedisCodeGenerator codeGenerator,
         }
         catch (DbUpdateException ex) when (ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
         {
+            logger.LogWarning("Duplicate code or alias {Code}", code);
             return Conflict($"The code or alias '{code}' is already in use.");
         }
+
+        logger.LogInformation("Created short URL {Code} for {LongUrl}", code, request.LongUrl);
 
         var shortUrlValue = $"{configuration["PublicBaseUrl"]}/{shortUrl.Code}";
         return Created(shortUrlValue, new CreateShortUrlResponse(shortUrlValue));
