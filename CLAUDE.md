@@ -119,8 +119,8 @@ curl -v http://localhost:5300/<code>
 - [ ] **Step 7** — Round out NFRs (expiration cleanup, alias collisions, rate limiting, logging)
 - [ ] **Step 8** — Full Docker Compose stack + polish
 
-Currently on: **Step 6, part 1 of 3 (Read/Write split) — done.** Counter batching and the local load balancer
-are still pending within Step 6.
+Currently on: **Step 6, part 2 of 3 (counter batching) — done.** The local load balancer is still pending
+within Step 6.
 
 **Known limitations carried forward on purpose:**
 - No collision handling on `CustomAlias`. A duplicate alias still throws an unhandled `DbUpdateException` → raw
@@ -149,6 +149,11 @@ are still pending within Step 6.
 - **New in Step 5**: Redis has no `maxmemory`/eviction policy configured, so its default is `noeviction` - under
   memory pressure it would reject writes rather than evict anything. Not a real risk at local/dev scale, but a
   genuine Step 6 (scale) concern once the dataset is large enough for cache memory to matter.
+- **New in Step 6 (counter batching)**: if a `WriteApi` process crashes or restarts while it still holds unused
+  values from its current reserved batch, those values are permanently skipped - the next process reserves a
+  fresh batch starting after the shared counter, not after the last value actually used. This produces gaps in
+  the sequence (e.g. codes might jump from `50` to `1051`), which the reference article treats as an accepted
+  cost of batching, not a bug - uniqueness is preserved either way, just not perfect density.
 
 ## Key decisions log
 
@@ -285,6 +290,20 @@ are still pending within Step 6.
   run against - `Bitly.WriteApi` is used for this by convention, since it is the service that owns writes to
   the schema conceptually. `Bitly.WriteApi` therefore also needed `Microsoft.EntityFrameworkCore.Design` added
   (the tools require it on the startup project specifically, not just the project containing the migrations).
+- **`RedisCodeGenerator` now reserves batches of 1000 via a single `INCRBY`, hands out values locally** (Step 6):
+  each instance holds `_nextValue`/`_batchEnd` in memory, guarded by a `SemaphoreSlim` (not a plain `lock`, since
+  the refill itself is `await`-based and C# does not allow awaiting inside a `lock` block). Verified live:
+  creating 10 URLs in a row produced exactly one `INCRBY` call (`redis-cli INFO commandstats`), not ten, and the
+  raw counter jumped by 1000 in a single step rather than incrementing one at a time.
+- **Real bug found and fixed via live verification**: the initial implementation defaulted `_batchEnd` to `0`
+  (the implicit C# default for `long`), and the refill check was `_nextValue > _batchEnd`. On the very first
+  call after process start, `_nextValue` is also `0`, so `0 > 0` is `false` - the check silently skipped
+  reserving a batch and returned `Encode(0)` = `"0"` directly, using uninitialized state as if it were a real
+  reserved value. This was not cosmetic: since these fields reset on every process restart, every restart would
+  have handed out `"0"` again, guaranteeing a collision (and the still-unhandled `DbUpdateException` gap) on the
+  second restart. Fixed by initializing `_batchEnd = -1` as an explicit "no batch reserved yet" sentinel.
+  Verified the fix by restarting the process twice in a row and confirming each restart correctly reserved a
+  fresh batch (`"HF"`, then `"XN"`) instead of repeating a prior code.
 
 ## Update this file
 

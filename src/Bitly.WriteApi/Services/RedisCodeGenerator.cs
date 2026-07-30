@@ -6,11 +6,32 @@ public class RedisCodeGenerator(IConnectionMultiplexer redis)
 {
     private const string CounterKey = "shorturl:counter";
     private const string Base62Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    private const int BatchSize = 1000;
+
+    private readonly SemaphoreSlim _batchLock = new(1, 1);
+    private long _nextValue;
+    private long _batchEnd = -1;
 
     public async Task<string> NextCodeAsync()
     {
-        var counter = await redis.GetDatabase().StringIncrementAsync(CounterKey);
-        return Encode(counter);
+        await _batchLock.WaitAsync();
+        try
+        {
+            if (_nextValue > _batchEnd)
+            {
+                var batchEnd = await redis.GetDatabase().StringIncrementAsync(CounterKey, BatchSize);
+                _batchEnd = batchEnd;
+                _nextValue = batchEnd - BatchSize + 1;
+            }
+
+            var value = _nextValue;
+            _nextValue++;
+            return Encode(value);
+        }
+        finally
+        {
+            _batchLock.Release();
+        }
     }
 
     private static string Encode(long value)
