@@ -5,6 +5,8 @@
 
 # dotenv files
 .env
+# except web/.env - no secrets, just the local API base URL, needed for the UI to work out of the box
+!web/.env
 
 # User-specific files
 *.rsuser

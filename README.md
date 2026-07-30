@@ -88,6 +88,7 @@ src/
                        expired-row cleanup (ExpiredShortUrlCleanupService, background job), Dockerfile
   Bitly.ReadApi/       GET /{code} - redirects (ShortUrlCache, cache-aside), Dockerfile
 nginx/nginx.conf       Load balancer config (round-robins across Read service instances)
+web/                   Minimal React + Vite + TypeScript UI (create a short URL, see the result)
 docker-compose.yml     Full stack: PostgreSQL + Redis + nginx + Write service + 2 Read service instances
 Bitly.slnx             Solution file
 ```
@@ -134,3 +135,20 @@ Compose service name, so it can't reach processes running outside Docker. To tes
 topology itself, use Option 1.
 
 Health check: `GET /health` on any service (ASP.NET Core's built-in Health Checks middleware)
+
+## Web UI
+
+A minimal React + Vite + TypeScript page (`web/`) - one form (long URL, optional custom alias/expiration),
+submits to the gateway, shows the resulting short link. No auth, no history/list of links (matches the
+reference spec - auth is out of scope).
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173`. Requires the API to be running (either option above) - the UI calls
+`http://localhost:8080/urls` directly, which is a cross-origin request from the UI's own dev-server origin, so
+`Bitly.WriteApi` has a narrow CORS policy (`AllowedUiOrigin` in its `appsettings.json`) allowing only that one
+origin, only for that one endpoint.

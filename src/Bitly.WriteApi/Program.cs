@@ -28,10 +28,20 @@ builder.Services.AddRateLimiter(options =>
             QueueLimit = 0,
         }));
 });
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("ui", policy =>
+    {
+        policy.WithOrigins(builder.Configuration["AllowedUiOrigin"]!)
+              .WithMethods("POST")
+              .WithHeaders("Content-Type");
+    });
+});
 
 var app = builder.Build();
 
 app.UseExceptionHandler();
+app.UseCors();
 app.UseRateLimiter();
 
 app.MapControllers();

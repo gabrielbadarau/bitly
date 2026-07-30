@@ -2,6 +2,7 @@ using Bitly.Domain.Data;
 using Bitly.Domain.Models;
 using Bitly.WriteApi.Contracts;
 using Bitly.WriteApi.Services;
+using Microsoft.AspNetCore.Cors;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
@@ -25,6 +26,7 @@ public class UrlsController(
 
     [HttpPost]
     [EnableRateLimiting("create")]
+    [EnableCors("ui")]
     public async Task<ActionResult<CreateShortUrlResponse>> Create(CreateShortUrlRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.LongUrl) ||

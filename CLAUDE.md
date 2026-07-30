@@ -61,6 +61,7 @@ src/
   dotnet-tools.json     Local tool manifest (dotnet-ef, pinned version)
 .dockerignore            Excludes bin/obj/.git/etc from the Docker build context
 nginx/nginx.conf         Load balancer config, round-robins across Bitly.ReadApi instances
+web/                     React + Vite + TypeScript UI, own .npmrc (public registry - see below)
 docker-compose.yml       Full stack: Postgres, Redis, nginx, write-api, read-api-1, read-api-2 (all buildable)
 Bitly.slnx               Solution file (new .slnx format, .NET 9+)
 ```
@@ -128,6 +129,16 @@ curl -X POST http://localhost:5299/urls -H "Content-Type: application/json" \
 curl -v http://localhost:8080/<code>
 # => 302 Found, Location: https://example.com, X-Instance-Name: read-a or read-b
 ```
+
+**Web UI** (`web/`, React + Vite + TypeScript):
+```bash
+cd web
+npm install    # uses web/.npmrc (public registry) - see Key decisions log
+npm run dev    # http://localhost:5173
+```
+Requires the API running (Option 1 or 2 above). Calls `http://localhost:8080/urls` directly from the browser -
+a genuine cross-origin request, so `Bitly.WriteApi` has a narrow CORS policy scoped to just that one endpoint
+(`AllowedUiOrigin` config value, default `http://localhost:5173`).
 
 ## Step plan status
 
@@ -494,6 +505,37 @@ Currently on: **Step 8 — done. The full step plan is complete.**
   the two (nginx in Docker, services on the host) is no longer possible now that `nginx.conf` routes by Compose
   service name rather than `host.docker.internal`, so pretending otherwise in the docs would have been
   actively misleading rather than just incomplete.
+- **Architecture diagram in README as a Mermaid code block, not a static image**: GitHub renders `mermaid` code
+  fences natively, so the diagram stays plain text and versioned alongside the code instead of a binary image
+  that needs manual regeneration whenever the architecture changes. Verified it actually renders correctly
+  (not just assumed valid syntax) by rendering it to PNG locally with `mermaid-cli` and inspecting the output.
+- **Web UI: React + Vite + TypeScript, user's explicit choice over a zero-build plain HTML/JS page** - both
+  were offered; React/Vite matches the user's existing background directly, at the cost of real tooling
+  (`npm install`, a dev server, a build step) for something this small.
+- **`web/.npmrc` pinning the public npm registry, not touching the machine's global npm config** (same
+  principle as the git-identity override from Step 1): this machine's global `~/.npmrc` points at a private
+  corporate registry (unrelated work configuration) and would fail to resolve public packages like `vite`.
+  A project-local `.npmrc` overrides this for anything run with `web/` as the working directory, without
+  touching global settings that other, unrelated projects on this machine depend on. Note: the very first
+  scaffold command (`npm create vite@latest`) still needed an explicit `--registry` flag, since that
+  particular resolution step runs before npm considers the (not-yet-created) target directory's own config.
+- **CORS scoped to exactly one endpoint (`[EnableCors("ui")]` on `Create`), not a blanket policy for the whole
+  service** - `app.UseCors()` is called with no default policy, so only endpoints explicitly opted in via the
+  attribute get CORS headers at all; `/health` and any future endpoint stay unaffected. Same least-privilege
+  pattern already used for `[EnableRateLimiting]`.
+- **Verified real cross-origin behavior in an actual browser, not just via curl** - loaded the UI at
+  `http://localhost:5173`, filled in and submitted the real form, and confirmed via the browser's own network
+  log a real preflight (`OPTIONS` → `204`) followed by the real request (`POST` → `201`), then followed the
+  resulting short link to the real target page. Also specifically verified a subtle middleware-ordering
+  concern: `UseCors()` is registered *before* `UseRateLimiter()`, so a rate-limited (`429`) response still
+  carries CORS headers - had the order been reversed, a rate-limited request from the browser would show up
+  as an opaque "Failed to fetch" CORS error instead of a readable `429`, since the browser hides the response
+  entirely when CORS headers are absent, regardless of the actual HTTP status.
+- **The UI needs its own origin, distinct from the API gateway, and that is a genuine constraint, not a
+  simplification**: short codes intentionally live at the root of the domain (`localhost:8080/abc123`), which
+  structurally conflicts with also serving a UI's own assets from that same root. This is why the UI's create
+  call to the gateway is a real cross-origin request requiring CORS, rather than a same-origin call that could
+  have avoided the issue entirely.
 
 ## Update this file
 
