@@ -128,7 +128,7 @@ curl -v http://localhost:8080/<code>
 - [x] **Step 7** — Round out NFRs (expiration cleanup, alias collisions, rate limiting, logging)
 - [ ] **Step 8** — Full Docker Compose stack + polish
 
-Currently on: **Step 8, part 1 of 3 (dockerize both services) — done.**
+Currently on: **Step 8, part 2 of 3 (nginx as a real API gateway) — done.**
 
 **Known limitations carried forward on purpose:**
 - **New in Step 4**: counter-generated codes are short and strictly sequential — `1, 2, 3, ...` — which means
@@ -358,9 +358,8 @@ Currently on: **Step 8, part 1 of 3 (dockerize both services) — done.**
   `/health` endpoint and became permanently unreachable. `UrlsController` now rejects `"health"` (`400`) before
   ever reaching the database. Verified live first that ASP.NET Core route matching is case-insensitive by
   default - `GET /HEALTH` still hit the health check, not the redirect catch-all - so the check uses
-  `StringComparer.OrdinalIgnoreCase` and blocks every casing, not just the literal lowercase word. The reserved
-  list currently only needs `"health"`, since that is the only literal route `Bitly.ReadApi` has today; it would
-  need updating if a future step ever adds another literal route there.
+  `StringComparer.OrdinalIgnoreCase` and blocks every casing, not just the literal lowercase word. (Grew to
+  include `"urls"` too in Step 8, once the nginx gateway made that collision real as well - see below.)
 - **`ExpiredShortUrlCleanupService` as a `BackgroundService` in `Bitly.WriteApi`, using `IServiceScopeFactory`**
   (Step 7): a `BackgroundService` is registered as a singleton for the app's whole lifetime, but `BitlyDbContext`
   is registered scoped - a scoped service cannot be injected directly into a singleton's constructor. The fix is
@@ -441,6 +440,32 @@ Currently on: **Step 8, part 1 of 3 (dockerize both services) — done.**
   rate-limit window - the first attempt correctly got `429` instead, since `UseRateLimiter()` runs before the
   controller and had just been exhausted by the rate-limit test moments earlier), and the cleanup job's log
   line all behaved identically to the host-run version.
+- **nginx now routes by path to two different upstream pools, using Compose service names** (Step 8):
+  `/urls` -> `write_api` (`write-api:8080`), everything else -> `read_api` (`read-api-1:8080`,
+  `read-api-2:8080`). Since all five app containers now share the same Compose network, service names resolve
+  directly via Docker's embedded DNS - `host.docker.internal` is gone entirely, along with the whole class of
+  host-networking gotchas hit in Step 6 (binding to `0.0.0.0`, the `extra_hosts` override that broke Rancher
+  Desktop's own resolution). The whole API is now reachable behind one public port, `8080`, instead of needing
+  `5299` for creates and `8080` for redirects separately.
+- **Real bug found and fixed via live verification**: `location /urls` in nginx does **prefix** matching by
+  default, so it also matched `/urlstest`, `/urlsanything` - any path starting with the literal string "urls".
+  Proved this concretely: created a short URL with `customAlias: "urlstest"`, then found `GET /urlstest`
+  through the gateway returned a false `404` - misrouted to `write-api` (which has no matching route) instead
+  of reaching `read-api`'s real lookup, even though the row genuinely existed. Fixed by changing to `location =
+  /urls` (nginx's exact-match modifier), which takes priority over prefix matches and only matches the literal
+  path. Verified live: `/urlstest` redirects correctly now, and `POST /urls` still works.
+- **Discovered and closed a second reserved-word gap, one level up from Step 7's**: a code exactly equal to
+  `"urls"` is also unreachable through the gateway - `GET /urls` always routes to `write-api` regardless of
+  HTTP method (via the same exact-match block used for `POST /urls`), and `write-api` has no `GET` handler
+  there, so ASP.NET Core correctly returns `405 Method Not Allowed` rather than ever reaching a real lookup.
+  Same root cause as the `"health"` gap from Step 7 (a code colliding with a literal gateway/route path), just
+  discovered at the nginx layer instead of the application layer once the gateway existed. Added `"urls"` to
+  the same `ReservedCodes` set used for `"health"` rather than inventing a separate mechanism.
+- **Kept individual service ports (`5299`/`5300`/`5301`) published to the host alongside the gateway** (Step
+  8): the stricter, more production-like topology would only expose nginx's `8080` and keep every service
+  internal-only. Chose to keep direct access instead, since this whole project has relied on curling individual
+  instances directly for verification throughout - convenient for continued learning/debugging outweighs
+  matching the stricter topology exactly. Worth knowing this tradeoff was a deliberate choice, not an oversight.
 
 ## Update this file
 

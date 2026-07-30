@@ -18,8 +18,10 @@ public class UrlsController(
     ILogger<UrlsController> logger) : ControllerBase
 {
     // ASP.NET Core route matching is case-insensitive, so "/HEALTH" also reaches the health check -
-    // block every casing a caller might try, not just the literal lowercase word.
-    private static readonly HashSet<string> ReservedCodes = new(StringComparer.OrdinalIgnoreCase) { "health" };
+    // block every casing a caller might try, not just the literal lowercase word. "urls" is reserved
+    // too: the nginx gateway (Step 8) routes the exact path "/urls" to this service regardless of HTTP
+    // method, so a code equal to "urls" would be permanently unreachable for GET (redirect) requests.
+    private static readonly HashSet<string> ReservedCodes = new(StringComparer.OrdinalIgnoreCase) { "health", "urls" };
 
     [HttpPost]
     [EnableRateLimiting("create")]
