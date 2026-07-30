@@ -15,6 +15,13 @@ builder.Services.AddSingleton<ShortUrlCache>();
 
 var app = builder.Build();
 
+var instanceName = Environment.GetEnvironmentVariable("INSTANCE_NAME") ?? Environment.MachineName;
+app.Use(async (context, next) =>
+{
+    context.Response.Headers["X-Instance-Name"] = instanceName;
+    await next();
+});
+
 app.MapControllers();
 app.MapHealthChecks("/health");
 

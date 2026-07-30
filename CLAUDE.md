@@ -58,24 +58,30 @@ src/
     Services/          ShortUrlCache (cache-aside layer: GetAsync/SetAsync, TTL = ExpirationDate or 24h default)
 .config/
   dotnet-tools.json     Local tool manifest (dotnet-ef, pinned version)
-docker-compose.yml       Local PostgreSQL (postgres:16-alpine) + Redis (redis:7-alpine, AOF persistence)
+nginx/nginx.conf         Load balancer config, round-robins across Bitly.ReadApi instances
+docker-compose.yml       Local PostgreSQL (postgres:16-alpine) + Redis (redis:7-alpine, AOF persistence) + nginx
 Bitly.slnx               Solution file (new .slnx format, .NET 9+)
 ```
 
 ## Commands
 
 ```bash
-docker compose up -d                                    # start Postgres + Redis
+docker compose up -d                                    # start Postgres + Redis + nginx (load balancer, :8080)
 dotnet tool restore                                      # restore local tools (dotnet-ef), once per clone
 dotnet build
-dotnet run --project src/Bitly.WriteApi                   # http://localhost:5299 - POST /urls
-dotnet run --project src/Bitly.ReadApi                     # http://localhost:5300 - GET /{code}
+dotnet run --project src/Bitly.WriteApi --urls http://0.0.0.0:5299                        # POST /urls
+INSTANCE_NAME=read-a dotnet run --project src/Bitly.ReadApi --urls http://0.0.0.0:5300     # GET /{code}
+INSTANCE_NAME=read-b dotnet run --project src/Bitly.ReadApi --urls http://0.0.0.0:5301     # 2nd instance, for the LB
 
 # EF Core migrations - Domain has no Program.cs/connection string of its own,
 # so WriteApi is used as the --startup-project
 dotnet ef migrations add <Name> --project src/Bitly.Domain --startup-project src/Bitly.WriteApi --output-dir Data/Migrations
 dotnet ef database update --project src/Bitly.Domain --startup-project src/Bitly.WriteApi
 ```
+
+Redirects through the load balancer: `http://localhost:8080/<code>` (nginx round-robins across whichever
+`Bitly.ReadApi` instances are running on 5300/5301). Bind services to `0.0.0.0`, not `localhost` - the nginx
+container reaches them via `host.docker.internal`, which cannot connect to a port only bound to loopback.
 
 Health check: `GET /health` → plain-text `Healthy` on either service (built-in ASP.NET Core Health Checks middleware)
 
@@ -89,8 +95,9 @@ dotnet user-secrets set "ConnectionStrings:Redis" "localhost:6379" --project src
 ```
 (the `bitly_dev_only` password is only ever used inside the local Docker network — fine to keep in this file and in `docker-compose.yml`, but the connection strings themselves still stay out of the committed `appsettings.json`/git history as a matter of habit.)
 
-`Bitly.WriteApi`'s `appsettings.json` also has a `PublicBaseUrl` (`http://localhost:5300`) - see Key decisions log
-for why the short URL returned by create must not be built from the Write service's own request host.
+`Bitly.WriteApi`'s `appsettings.json` also has a `PublicBaseUrl` (`http://localhost:8080`, the load balancer) -
+see Key decisions log for why the short URL returned by create must not be built from the Write service's own
+request host.
 
 Inspect the Redis counter directly: `docker exec bitly-redis redis-cli GET shorturl:counter`
 
@@ -102,10 +109,10 @@ Quick manual test of the end-to-end flow:
 ```bash
 curl -X POST http://localhost:5299/urls -H "Content-Type: application/json" \
   -d '{"longUrl": "https://example.com"}'
-# => 201 { "shortUrl": "http://localhost:5300/<code>" }
+# => 201 { "shortUrl": "http://localhost:8080/<code>" }
 
-curl -v http://localhost:5300/<code>
-# => 302 Found, Location: https://example.com
+curl -v http://localhost:8080/<code>
+# => 302 Found, Location: https://example.com, X-Instance-Name: read-a or read-b
 ```
 
 ## Step plan status
@@ -115,12 +122,11 @@ curl -v http://localhost:5300/<code>
 - [x] **Step 3** — Naive end-to-end create/redirect flow
 - [x] **Step 4** — Deep dive: uniqueness (Redis counter + base62)
 - [x] **Step 5** — Deep dive: fast redirects (Redis cache-aside)
-- [ ] **Step 6** — Deep dive: scale (Read/Write service split + local load balancer)
+- [x] **Step 6** — Deep dive: scale (Read/Write service split + local load balancer)
 - [ ] **Step 7** — Round out NFRs (expiration cleanup, alias collisions, rate limiting, logging)
 - [ ] **Step 8** — Full Docker Compose stack + polish
 
-Currently on: **Step 6, part 2 of 3 (counter batching) — done.** The local load balancer is still pending
-within Step 6.
+Currently on: **Step 6 — done.**
 
 **Known limitations carried forward on purpose:**
 - No collision handling on `CustomAlias`. A duplicate alias still throws an unhandled `DbUpdateException` → raw
@@ -154,6 +160,11 @@ within Step 6.
   fresh batch starting after the shared counter, not after the last value actually used. This produces gaps in
   the sequence (e.g. codes might jump from `50` to `1051`), which the reference article treats as an accepted
   cost of batching, not a bug - uniqueness is preserved either way, just not perfect density.
+- **New in Step 6 (load balancer)**: only the Read service sits behind the load balancer; `Bitly.WriteApi` still
+  runs as a single instance with no LB in front of it. This matches the article's own premise (reads scale
+  independently because they vastly outnumber writes) rather than being an oversight, but it does mean the
+  Write path has no redundancy - if that one instance goes down, creates stop working even though redirects
+  keep serving fine from the cache/Postgres via the Read instances.
 
 ## Key decisions log
 
@@ -304,6 +315,28 @@ within Step 6.
   second restart. Fixed by initializing `_batchEnd = -1` as an explicit "no batch reserved yet" sentinel.
   Verified the fix by restarting the process twice in a row and confirming each restart correctly reserved a
   fresh batch (`"HF"`, then `"XN"`) instead of repeating a prior code.
+- **nginx (plain container, no custom image) as the local load balancer** (Step 6): round-robin is nginx's
+  default `upstream` behavior, needing zero extra config - just an `upstream` block listing both `ReadApi`
+  instances and a `server` block proxying to it. No new .NET project needed for this piece; it is pure
+  infrastructure config, mounted read-only into the container via `docker-compose.yml`.
+- **`X-Instance-Name` response header added to `Bitly.ReadApi`** (Step 6): reads an `INSTANCE_NAME` environment
+  variable and stamps every response with it. Added specifically to make load balancing verifiable rather than
+  assumed - without it there would be no way to tell from the outside whether requests were actually hitting
+  two different processes or one process handling everything. Kept as a small permanent feature rather than
+  ripped out after verifying, similar to how real systems often expose instance/pod identity for debugging.
+- **Real networking gotcha hit and fixed**: nginx initially failed with `502 Bad Gateway` / `Connection refused`
+  reaching `host.docker.internal`. Two causes, both fixed: (1) `Bitly.ReadApi` was bound to `--urls
+  http://localhost:5300`, which only listens on loopback and refuses connections arriving from the Docker
+  network - fixed by binding to `0.0.0.0` instead, so the process accepts connections on any interface: (2) an
+  explicit `extra_hosts: ["host.docker.internal:host-gateway"]` entry was added defensively (a common idiom for
+  Linux Docker hosts) but it actively broke things here - it overrode Rancher Desktop's own correct, built-in
+  resolution of `host.docker.internal` with the wrong bridge-gateway IP. Removed the override entirely and let
+  Rancher Desktop handle it natively. Verified live: 8 requests through the load balancer alternated perfectly
+  between `read-a`/`read-b` via the response header, for both `/health` and real `GET /{code}` redirect traffic.
+- **`PublicBaseUrl` updated to the load balancer address (`http://localhost:8080`)** (Step 6): this closes the
+  loop flagged when `PublicBaseUrl` was first introduced in part 1 of this step - once multiple Read instances
+  exist, the short URL returned by create must point at the address that actually distributes traffic across
+  them, not at any single instance directly.
 
 ## Update this file
 
