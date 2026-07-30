@@ -127,15 +127,16 @@ curl -v http://localhost:8080/<code>
 - [ ] **Step 7** — Round out NFRs (expiration cleanup, alias collisions, rate limiting, logging)
 - [ ] **Step 8** — Full Docker Compose stack + polish
 
-Currently on: **Step 7, part 3 of 5 (expiration cleanup) — done.**
+Currently on: **Step 7, part 4 of 5 (rate limiting) — done.**
 
 **Known limitations carried forward on purpose:**
 - **New in Step 4**: counter-generated codes are short and strictly sequential — `1, 2, 3, ...` — which means
   they are trivially predictable and enumerable. Anyone can walk `/1`, `/2`, `/3`... and discover every
   short URL ever created, including ones nobody advertised. The reference article explicitly calls this out as
-  an accepted tradeoff of the counter approach, not something it solves. Left as-is for now; a cheap future
-  mitigation would be reversibly scrambling the counter value (e.g. XOR/Feistel) before base62-encoding it, so
-  codes stop being sequential-looking while remaining collision-free and decodable.
+  an accepted tradeoff of the counter approach, not something it solves. Step 7's rate limiting on `GET /{code}`
+  slows down (but does not stop) walking the sequence; a real fix would be reversibly scrambling the counter
+  value (e.g. XOR/Feistel) before base62-encoding it, so codes stop being sequential-looking while remaining
+  collision-free and decodable.
 - **New in Step 4**: uniqueness is now only guaranteed if the Redis counter is intact. If Redis data were ever
   lost despite the AOF persistence (e.g. the volume itself is deleted), the counter restarts at 0 and could
   hand out a code that already exists in Postgres — which would hit the very same unhandled-`DbUpdateException`
@@ -145,7 +146,9 @@ Currently on: **Step 7, part 3 of 5 (expiration cleanup) — done.**
   collision path still does not exist yet.
 - **New in Step 5**: no negative caching. A request for a code that does not exist always falls through to
   Postgres, every time - a real "cache penetration" pattern (repeatedly requesting missing keys bypasses the
-  cache entirely). Not addressed now; would pair naturally with Step 7's rate limiting.
+  cache entirely). Step 7's rate limiting on `GET /{code}` (20 req/10s per IP) partially mitigates the impact of
+  this by bounding how fast one client can repeat it, but does not fix the underlying gap - negative caching
+  itself is still not implemented.
 - **New in Step 5**: Redis has no `maxmemory`/eviction policy configured, so its default is `noeviction` - under
   memory pressure it would reject writes rather than evict anything. Not a real risk at local/dev scale, but a
   genuine Step 6 (scale) concern once the dataset is large enough for cache memory to matter.
@@ -384,6 +387,15 @@ Currently on: **Step 7, part 3 of 5 (expiration cleanup) — done.**
 - **Verified the cleanup job does not touch valid rows** (Step 7): created one `ShortUrl` with no expiration and
   one expiring a day out, waited through two 5s cleanup cycles, confirmed both rows still exist - the `WHERE
   "ExpirationDate" IS NOT NULL AND "ExpirationDate" <= now()` filter is not accidentally broad.
+- **Built-in ASP.NET Core rate limiting (`AddRateLimiter`), partitioned per client IP, not global** (Step 7): a
+  fixed-window limiter keyed on `httpContext.Connection.RemoteIpAddress` gives every client their own
+  independent bucket - the simpler alternative (one shared limiter for every caller) would let one heavy client
+  starve everyone else, which defeats the point. `POST /urls` (rare, expensive) gets a strict 5 requests/10s;
+  `GET /{code}` (the main path) gets a more lenient 20 requests/10s, still bounded specifically to slow down
+  walking the enumerable counter sequence noted above. `/health` is deliberately left unprotected - it is never
+  attributed the `[EnableRateLimiting]` policy, since load balancers and monitoring need to reach it freely.
+  Verified live on both services: exactly `PermitLimit` requests succeed, the next ones get `429`, `/health`
+  stays unaffected throughout, and a fresh request succeeds again once the 10s window elapses.
 
 ## Update this file
 

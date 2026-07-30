@@ -27,10 +27,10 @@ Local-only, zero-cost: everything runs via Docker (Rancher Desktop), no cloud se
 **API**
 - `POST /urls` (Write service) — create a short URL (`{ longUrl, customAlias?, expirationDate? }` → `{ shortUrl }`;
   JSON fields are camelCase, .NET's default, rather than the reference spec's snake_case). `400` for an invalid
-  URL or a reserved alias, `409` if the code/alias is already in use.
+  URL or a reserved alias, `409` if the code/alias is already in use, `429` past 5 requests/10s per client.
 - `GET /{code}` (Read service) — `302` redirect to the original URL, `404` if unknown, `410` if past its
-  expiration date. Expired rows are also purged from the database periodically by a background job, not just
-  hidden from reads.
+  expiration date, `429` past 20 requests/10s per client. Expired rows are also purged from the database
+  periodically by a background job, not just hidden from reads.
 
 **Deep dives covered by the reference article** (built incrementally in this repo):
 1. **Uniqueness** — hash+base62 vs. a Redis-backed global counter with base62 encoding

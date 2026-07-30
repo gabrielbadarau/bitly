@@ -3,6 +3,7 @@ using Bitly.Domain.Models;
 using Bitly.WriteApi.Contracts;
 using Bitly.WriteApi.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -18,6 +19,7 @@ public class UrlsController(BitlyDbContext db, RedisCodeGenerator codeGenerator,
     private static readonly HashSet<string> ReservedCodes = new(StringComparer.OrdinalIgnoreCase) { "health" };
 
     [HttpPost]
+    [EnableRateLimiting("create")]
     public async Task<ActionResult<CreateShortUrlResponse>> Create(CreateShortUrlRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.LongUrl) ||

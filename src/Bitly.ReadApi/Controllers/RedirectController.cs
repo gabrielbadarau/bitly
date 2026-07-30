@@ -1,6 +1,7 @@
 using Bitly.Domain.Data;
 using Bitly.ReadApi.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bitly.ReadApi.Controllers;
@@ -9,6 +10,7 @@ namespace Bitly.ReadApi.Controllers;
 public class RedirectController(BitlyDbContext db, ShortUrlCache cache) : ControllerBase
 {
     [HttpGet("/{code}")]
+    [EnableRateLimiting("redirect")]
     public async Task<IActionResult> RedirectToLongUrl(string code)
     {
         var cachedLongUrl = await cache.GetAsync(code);

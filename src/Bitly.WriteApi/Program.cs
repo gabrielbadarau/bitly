@@ -1,5 +1,7 @@
+using System.Threading.RateLimiting;
 using Bitly.Domain.Data;
 using Bitly.WriteApi.Services;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using StackExchange.Redis;
 
@@ -14,10 +16,23 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
     ConnectionMultiplexer.Connect(builder.Configuration.GetConnectionString("Redis")!));
 builder.Services.AddSingleton<RedisCodeGenerator>();
 builder.Services.AddHostedService<ExpiredShortUrlCleanupService>();
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("create", httpContext => RateLimitPartition.GetFixedWindowLimiter(
+        partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        factory: _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 5,
+            Window = TimeSpan.FromSeconds(10),
+            QueueLimit = 0,
+        }));
+});
 
 var app = builder.Build();
 
 app.UseExceptionHandler();
+app.UseRateLimiter();
 
 app.MapControllers();
 app.MapHealthChecks("/health");
