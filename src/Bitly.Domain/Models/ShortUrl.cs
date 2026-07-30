@@ -1,4 +1,4 @@
-namespace Bitly.Api.Models;
+namespace Bitly.Domain.Models;
 
 public class ShortUrl
 {

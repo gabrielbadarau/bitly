@@ -1,6 +1,6 @@
 using StackExchange.Redis;
 
-namespace Bitly.Api.Services;
+namespace Bitly.WriteApi.Services;
 
 public class RedisCodeGenerator(IConnectionMultiplexer redis)
 {

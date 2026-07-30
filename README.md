@@ -25,9 +25,10 @@ Local-only, zero-cost: everything runs via Docker (Rancher Desktop), no cloud se
 - `User`: creator of a short URL (omitted in this implementation — auth is out of scope)
 
 **API**
-- `POST /urls` — create a short URL (`{ longUrl, customAlias?, expirationDate? }` → `{ shortUrl }`; JSON fields are
-  camelCase, .NET's default, rather than the reference spec's snake_case)
-- `GET /{code}` — `302` redirect to the original URL, `404` if unknown, `410` if past its expiration date
+- `POST /urls` (Write service) — create a short URL (`{ longUrl, customAlias?, expirationDate? }` → `{ shortUrl }`;
+  JSON fields are camelCase, .NET's default, rather than the reference spec's snake_case)
+- `GET /{code}` (Read service) — `302` redirect to the original URL, `404` if unknown, `410` if past its
+  expiration date
 
 **Deep dives covered by the reference article** (built incrementally in this repo):
 1. **Uniqueness** — hash+base62 vs. a Redis-backed global counter with base62 encoding
@@ -37,6 +38,7 @@ Local-only, zero-cost: everything runs via Docker (Rancher Desktop), no cloud se
 ## Stack
 
 - .NET 10, ASP.NET Core Web API (Controllers)
+- Separate Read and Write services (independent scaling for the read-heavy redirect path vs. the rare create path)
 - PostgreSQL + Redis, run via Docker Compose (Rancher Desktop)
 - Local only — no cloud dependencies
 
@@ -44,15 +46,11 @@ Local-only, zero-cost: everything runs via Docker (Rancher Desktop), no cloud se
 
 ```
 src/
-  Bitly.Api/
-    Controllers/     API endpoints
-    Models/          Entities (e.g. ShortUrl)
-    Contracts/       Request/response DTOs
-    Data/            EF Core DbContext + migrations
-    Services/        RedisCodeGenerator (counter-based short code generation),
-                     ShortUrlCache (cache-aside layer for redirects)
-docker-compose.yml    Local PostgreSQL + Redis
-Bitly.slnx            Solution file
+  Bitly.Domain/       Shared entity (ShortUrl) + EF Core DbContext + migrations
+  Bitly.WriteApi/      POST /urls - code generation (RedisCodeGenerator)
+  Bitly.ReadApi/       GET /{code} - redirects (ShortUrlCache, cache-aside)
+docker-compose.yml     Local PostgreSQL + Redis
+Bitly.slnx             Solution file
 ```
 
 ## Prerequisites
@@ -68,15 +66,17 @@ docker compose up -d
 
 # 2. Restore local tools (EF Core CLI) and apply migrations
 dotnet tool restore
-dotnet ef database update --project src/Bitly.Api
+dotnet ef database update --project src/Bitly.Domain --startup-project src/Bitly.WriteApi
 
-# 3. Configure connection strings (once)
-dotnet user-secrets set "ConnectionStrings:BitlyDb" "Host=localhost;Port=5432;Database=bitly;Username=bitly;Password=bitly_dev_only" --project src/Bitly.Api
-dotnet user-secrets set "ConnectionStrings:Redis" "localhost:6379" --project src/Bitly.Api
+# 3. Configure connection strings (once per service)
+dotnet user-secrets set "ConnectionStrings:BitlyDb" "Host=localhost;Port=5432;Database=bitly;Username=bitly;Password=bitly_dev_only" --project src/Bitly.WriteApi
+dotnet user-secrets set "ConnectionStrings:Redis" "localhost:6379" --project src/Bitly.WriteApi
+dotnet user-secrets set "ConnectionStrings:BitlyDb" "Host=localhost;Port=5432;Database=bitly;Username=bitly;Password=bitly_dev_only" --project src/Bitly.ReadApi
+dotnet user-secrets set "ConnectionStrings:Redis" "localhost:6379" --project src/Bitly.ReadApi
 
-# 4. Run the API
-dotnet build
-dotnet run --project src/Bitly.Api
+# 4. Run both services (separate terminals)
+dotnet run --project src/Bitly.WriteApi   # http://localhost:5299 - POST /urls
+dotnet run --project src/Bitly.ReadApi    # http://localhost:5300 - GET /{code}
 ```
 
-Health check: `GET http://localhost:5299/health` (ASP.NET Core's built-in Health Checks middleware)
+Health check: `GET /health` on either service (ASP.NET Core's built-in Health Checks middleware)

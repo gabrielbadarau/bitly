@@ -46,20 +46,21 @@ the .NET dependency injection container.
 
 ```
 src/
-  Bitly.Api/
-    Controllers/       API endpoints (UrlsController: POST /urls, GET /{code})
+  Bitly.Domain/
     Models/            Entities (ShortUrl)
+    Data/              BitlyDbContext + Migrations/ (shared by both services below)
+  Bitly.WriteApi/       ASP.NET Core Web API - port 5299
+    Controllers/       UrlsController (POST /urls only)
     Contracts/         Request/response DTOs (records)
-    Data/              BitlyDbContext + Migrations/
-    Services/          RedisCodeGenerator (Redis INCR + base62 encoding),
-                       ShortUrlCache (cache-aside layer: GetAsync/SetAsync, TTL = ExpirationDate or 24h default)
+    Services/          RedisCodeGenerator (Redis INCR + base62 encoding)
+  Bitly.ReadApi/        ASP.NET Core Web API - port 5300
+    Controllers/       RedirectController (GET /{code} only)
+    Services/          ShortUrlCache (cache-aside layer: GetAsync/SetAsync, TTL = ExpirationDate or 24h default)
 .config/
   dotnet-tools.json     Local tool manifest (dotnet-ef, pinned version)
 docker-compose.yml       Local PostgreSQL (postgres:16-alpine) + Redis (redis:7-alpine, AOF persistence)
 Bitly.slnx               Solution file (new .slnx format, .NET 9+)
 ```
-
-No separate domain project right now — see Key decisions log for why, and when to reintroduce one.
 
 ## Commands
 
@@ -67,21 +68,29 @@ No separate domain project right now — see Key decisions log for why, and when
 docker compose up -d                                    # start Postgres + Redis
 dotnet tool restore                                      # restore local tools (dotnet-ef), once per clone
 dotnet build
-dotnet run --project src/Bitly.Api                        # serves on the port in launchSettings.json
+dotnet run --project src/Bitly.WriteApi                   # http://localhost:5299 - POST /urls
+dotnet run --project src/Bitly.ReadApi                     # http://localhost:5300 - GET /{code}
 
-# EF Core migrations (run from src/Bitly.Api, or add --project src/Bitly.Api)
-dotnet ef migrations add <Name> --output-dir Data/Migrations
-dotnet ef database update
+# EF Core migrations - Domain has no Program.cs/connection string of its own,
+# so WriteApi is used as the --startup-project
+dotnet ef migrations add <Name> --project src/Bitly.Domain --startup-project src/Bitly.WriteApi --output-dir Data/Migrations
+dotnet ef database update --project src/Bitly.Domain --startup-project src/Bitly.WriteApi
 ```
 
-Health check: `GET /health` → plain-text `Healthy` (built-in ASP.NET Core Health Checks middleware, `Program.cs`)
+Health check: `GET /health` → plain-text `Healthy` on either service (built-in ASP.NET Core Health Checks middleware)
 
-Connection strings live in **user-secrets**, not `appsettings.json`:
+Connection strings live in **user-secrets**, not `appsettings.json` - each service has its own secrets store, same
+values:
 ```bash
-dotnet user-secrets set "ConnectionStrings:BitlyDb" "Host=localhost;Port=5432;Database=bitly;Username=bitly;Password=bitly_dev_only" --project src/Bitly.Api
-dotnet user-secrets set "ConnectionStrings:Redis" "localhost:6379" --project src/Bitly.Api
+dotnet user-secrets set "ConnectionStrings:BitlyDb" "Host=localhost;Port=5432;Database=bitly;Username=bitly;Password=bitly_dev_only" --project src/Bitly.WriteApi
+dotnet user-secrets set "ConnectionStrings:Redis" "localhost:6379" --project src/Bitly.WriteApi
+dotnet user-secrets set "ConnectionStrings:BitlyDb" "Host=localhost;Port=5432;Database=bitly;Username=bitly;Password=bitly_dev_only" --project src/Bitly.ReadApi
+dotnet user-secrets set "ConnectionStrings:Redis" "localhost:6379" --project src/Bitly.ReadApi
 ```
 (the `bitly_dev_only` password is only ever used inside the local Docker network — fine to keep in this file and in `docker-compose.yml`, but the connection strings themselves still stay out of the committed `appsettings.json`/git history as a matter of habit.)
+
+`Bitly.WriteApi`'s `appsettings.json` also has a `PublicBaseUrl` (`http://localhost:5300`) - see Key decisions log
+for why the short URL returned by create must not be built from the Write service's own request host.
 
 Inspect the Redis counter directly: `docker exec bitly-redis redis-cli GET shorturl:counter`
 
@@ -93,9 +102,9 @@ Quick manual test of the end-to-end flow:
 ```bash
 curl -X POST http://localhost:5299/urls -H "Content-Type: application/json" \
   -d '{"longUrl": "https://example.com"}'
-# => 201 { "shortUrl": "http://localhost:5299/<code>" }
+# => 201 { "shortUrl": "http://localhost:5300/<code>" }
 
-curl -v http://localhost:5299/<code>
+curl -v http://localhost:5300/<code>
 # => 302 Found, Location: https://example.com
 ```
 
@@ -110,7 +119,8 @@ curl -v http://localhost:5299/<code>
 - [ ] **Step 7** — Round out NFRs (expiration cleanup, alias collisions, rate limiting, logging)
 - [ ] **Step 8** — Full Docker Compose stack + polish
 
-Currently on: **Step 5 — done.**
+Currently on: **Step 6, part 1 of 3 (Read/Write split) — done.** Counter batching and the local load balancer
+are still pending within Step 6.
 
 **Known limitations carried forward on purpose:**
 - No collision handling on `CustomAlias`. A duplicate alias still throws an unhandled `DbUpdateException` → raw
@@ -240,6 +250,41 @@ Currently on: **Step 5 — done.**
   Postgres with no network hop and a handful of rows, so there is little latency to remove in the first place.
   The mechanism is correct and the improvement is real and measured, just smaller than the article's numbers
   would suggest at a scale we are not actually operating at.
+- **`Bitly.Domain` reintroduced, `Bitly.Api` retired, split into `Bitly.WriteApi` + `Bitly.ReadApi`** (Step 6):
+  this is exactly the trigger condition written down in Step 1's decision to collapse `Bitly.Domain` -
+  "split out a `Bitly.Domain` project if/when Step 6 actually needs a second consumer." Both new services need
+  `ShortUrl`/`BitlyDbContext`, so the domain project is real this time, not speculative. `RedisCodeGenerator`
+  stays in `WriteApi` only and `ShortUrlCache` stays in `ReadApi` only - neither is actually shared between the
+  two services, so neither belongs in `Bitly.Domain` (would repeat the earlier over-eager-sharing mistake).
+- **The short URL returned by create points at the Read service, not the Write service's own host** (Step 6):
+  `UrlsController` used to build `shortUrl` from `Request.Scheme`/`Request.Host`, which after the split would
+  produce a link back to `Bitly.WriteApi` (port 5299) - the one service that can never serve `GET /{code}`.
+  Replaced with a `PublicBaseUrl` config value (`Bitly.WriteApi/appsettings.json`, currently
+  `http://localhost:5300`) pointing at wherever redirects are actually served. Verified live: created a URL via
+  `POST` on 5299, confirmed the response and `Location` header pointed at 5300, and that the code actually
+  redirected correctly from there. This value will need to become the load balancer's address once part 3 of
+  this step adds one in front of multiple Read instances.
+- **Each service gets its own `dotnet user-secrets` store** (Step 6): `UserSecretsId` is per-`.csproj`, so
+  `WriteApi` and `ReadApi` each needed their own `dotnet user-secrets init` + `set` calls, even though the actual
+  connection string values are identical. This is expected, not a workaround - two independently deployable
+  services should not share a secrets file even in dev.
+- **EF Core package versions had to be pinned explicitly across projects** (Step 6, real gotcha hit): after the
+  split, `dotnet build` failed with `CS1705` - `Bitly.Domain` (which references `Microsoft.EntityFrameworkCore
+  .Design`) resolved `Microsoft.EntityFrameworkCore` to `10.0.10`, while `WriteApi`/`ReadApi` (which only
+  reference `Npgsql.EntityFrameworkCore.PostgreSQL`) independently resolved it to a lower transitive `10.0.4`.
+  Project references do not force version alignment across a solution the way you might expect. Fixed by adding
+  explicit `PackageReference`s for `Microsoft.EntityFrameworkCore` and `.Relational` at `10.0.10` to both
+  service projects, converging all three projects on the same version.
+- **Namespace rename during the move (`Bitly.Api.*` → `Bitly.Domain.*`) does not break existing migrations**
+  (Step 6): confirmed live - `dotnet ef migrations list` still showed both prior migrations as applied, and
+  `dotnet ef database update` reported a clean no-op, after moving and renaming the entity/DbContext/migration
+  files. EF's `__EFMigrationsHistory` table only stores the `MigrationId` string, not a fully-qualified type
+  name, so this kind of structural refactor is safe as long as the migration ID itself is untouched.
+- **Migrations now require both `--project` and `--startup-project`** (Step 6): `Bitly.Domain` has no
+  `Program.cs` or connection string of its own, so `dotnet ef` needs a separate "startup project" to actually
+  run against - `Bitly.WriteApi` is used for this by convention, since it is the service that owns writes to
+  the schema conceptually. `Bitly.WriteApi` therefore also needed `Microsoft.EntityFrameworkCore.Design` added
+  (the tools require it on the startup project specifically, not just the project containing the migrations).
 
 ## Update this file
 

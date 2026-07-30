@@ -1,6 +1,6 @@
 using StackExchange.Redis;
 
-namespace Bitly.Api.Services;
+namespace Bitly.ReadApi.Services;
 
 public class ShortUrlCache(IConnectionMultiplexer redis)
 {

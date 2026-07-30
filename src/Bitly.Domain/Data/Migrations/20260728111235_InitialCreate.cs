@@ -4,7 +4,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
 #nullable disable
 
-namespace Bitly.Api.Data.Migrations
+namespace Bitly.Domain.Data.Migrations
 {
     /// <inheritdoc />
     public partial class InitialCreate : Migration

@@ -1,7 +1,7 @@
-using Bitly.Api.Models;
+using Bitly.Domain.Models;
 using Microsoft.EntityFrameworkCore;
 
-namespace Bitly.Api.Data;
+namespace Bitly.Domain.Data;
 
 public class BitlyDbContext(DbContextOptions<BitlyDbContext> options) : DbContext(options)
 {

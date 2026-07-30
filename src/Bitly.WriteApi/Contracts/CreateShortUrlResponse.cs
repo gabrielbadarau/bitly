@@ -1,3 +1,3 @@
-namespace Bitly.Api.Contracts;
+namespace Bitly.WriteApi.Contracts;
 
 public record CreateShortUrlResponse(string ShortUrl);
