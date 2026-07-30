@@ -45,6 +45,40 @@ Local-only, zero-cost: everything runs via Docker (Rancher Desktop), no cloud se
 - Everything - Postgres, Redis, nginx, and both .NET services - runs via Docker Compose (Rancher Desktop)
 - Local only — no cloud dependencies
 
+## Architecture
+
+```mermaid
+graph TD
+    Client([Client])
+    Nginx["nginx Gateway<br/>:8080"]
+    Write["Write API<br/>:5299"]
+    Read1["Read API #1<br/>:5300"]
+    Read2["Read API #2<br/>:5301"]
+    Postgres[("PostgreSQL")]
+    Redis[("Redis")]
+
+    Client -->|"POST /urls"| Nginx
+    Client -->|"GET /code"| Nginx
+    Nginx -->|"exact match /urls"| Write
+    Nginx -->|"everything else,<br/>round-robin"| Read1
+    Nginx -->|"everything else,<br/>round-robin"| Read2
+
+    Write -->|"INCRBY, batches of 1000"| Redis
+    Write -->|"INSERT / periodic DELETE of expired rows"| Postgres
+
+    Read1 -->|"cache lookup"| Redis
+    Read1 -.->|"on cache miss:<br/>SELECT, then populate cache"| Postgres
+    Read2 -->|"cache lookup"| Redis
+    Read2 -.->|"on cache miss:<br/>SELECT, then populate cache"| Postgres
+```
+
+- **Write path**: create → reserve a code from the Redis-backed counter (batched, one round-trip per 1,000
+  codes) → insert into Postgres. A background job periodically deletes expired rows.
+- **Read path**: redirect → check Redis cache first; on a miss, query Postgres and populate the cache for next
+  time (cache-aside). Two Read instances behind nginx, load-balanced round-robin.
+- Both services share the same Postgres and Redis - Redis is the single source of truth for code uniqueness,
+  not just a cache.
+
 ## Project structure
 
 ```
