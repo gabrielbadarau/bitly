@@ -3,6 +3,8 @@ using Bitly.Domain.Models;
 using Bitly.WriteApi.Contracts;
 using Bitly.WriteApi.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace Bitly.WriteApi.Controllers;
 
@@ -34,7 +36,15 @@ public class UrlsController(BitlyDbContext db, RedisCodeGenerator codeGenerator,
         };
 
         db.ShortUrls.Add(shortUrl);
-        await db.SaveChangesAsync();
+
+        try
+        {
+            await db.SaveChangesAsync();
+        }
+        catch (DbUpdateException ex) when (ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
+        {
+            return Conflict($"The code or alias '{code}' is already in use.");
+        }
 
         var shortUrlValue = $"{configuration["PublicBaseUrl"]}/{shortUrl.Code}";
         return Created(shortUrlValue, new CreateShortUrlResponse(shortUrlValue));

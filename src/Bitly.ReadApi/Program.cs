@@ -7,6 +7,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
 builder.Services.AddHealthChecks();
+builder.Services.AddProblemDetails();
 builder.Services.AddDbContext<BitlyDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("BitlyDb")));
 builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
@@ -14,6 +15,8 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
 builder.Services.AddSingleton<ShortUrlCache>();
 
 var app = builder.Build();
+
+app.UseExceptionHandler();
 
 var instanceName = Environment.GetEnvironmentVariable("INSTANCE_NAME") ?? Environment.MachineName;
 app.Use(async (context, next) =>

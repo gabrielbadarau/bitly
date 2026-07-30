@@ -126,13 +126,9 @@ curl -v http://localhost:8080/<code>
 - [ ] **Step 7** — Round out NFRs (expiration cleanup, alias collisions, rate limiting, logging)
 - [ ] **Step 8** — Full Docker Compose stack + polish
 
-Currently on: **Step 6 — done.**
+Currently on: **Step 7, part 1 of 5 (safe error handling) — done.**
 
 **Known limitations carried forward on purpose:**
-- No collision handling on `CustomAlias`. A duplicate alias still throws an unhandled `DbUpdateException` → raw
-  `500` with a full stack trace leaked to the client (verified live in Step 3, still true — the counter only
-  fixed collisions on *generated* codes, not user-supplied aliases). Proper handling (`409 Conflict`, generic
-  exception → problem-details mapping) belongs in Step 7's NFR pass.
 - `GET /{code}` is a root-level catch-all route — a code/alias equal to `health` would silently shadow the
   health check and become permanently unreachable (verified live in the routing discussion before Step 4). Not
   addressed yet.
@@ -337,6 +333,22 @@ Currently on: **Step 6 — done.**
   loop flagged when `PublicBaseUrl` was first introduced in part 1 of this step - once multiple Read instances
   exist, the short URL returned by create must point at the address that actually distributes traffic across
   them, not at any single instance directly.
+- **Duplicate alias handled explicitly, separately from generic exception handling** (Step 7): a duplicate
+  `Code`/`CustomAlias` is a foreseeable business condition, not a crash - `UrlsController.Create` now catches
+  `DbUpdateException` specifically when its `InnerException` is a `PostgresException` with
+  `SqlState: PostgresErrorCodes.UniqueViolation` (Postgres error code `23505`) and returns a clean `409
+  Conflict`. This is deliberately separate from the broader safety net below - business-expected conditions get
+  explicit handling with a specific status code, in every environment, rather than falling through to a generic
+  handler. Verified live: the exact duplicate-alias scenario reproduced back in Step 3 now returns `409` with a
+  clean message instead of a `500` with a leaked stack trace.
+- **`AddProblemDetails()` + `UseExceptionHandler()` as a safety net for genuinely unexpected exceptions** (Step
+  7, both services): anything not explicitly caught now returns a generic RFC 9110 problem-details response
+  (`{"type", "title", "status", "traceId"}`) instead of leaking internals. Verified live with a real failure, not
+  a contrived one: stopped the `bitly-postgres` container and attempted a create - got a clean `500`
+  problem+json body with a `traceId` for correlation, no connection string or stack trace anywhere in the
+  response. Notable, verified behavior: this suppressed ASP.NET Core's automatic Development-mode diagnostic
+  page too, not just Production's - explicitly configuring exception handling takes precedence over the
+  framework's default Development behavior, not just supplementing it.
 
 ## Update this file
 
