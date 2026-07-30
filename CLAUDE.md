@@ -49,18 +49,19 @@ src/
   Bitly.Domain/
     Models/            Entities (ShortUrl)
     Data/              BitlyDbContext + Migrations/ (shared by both services below)
-  Bitly.WriteApi/       ASP.NET Core Web API - port 5299
+  Bitly.WriteApi/       ASP.NET Core Web API - port 5299, Dockerfile (multi-stage: sdk build -> aspnet runtime)
     Controllers/       UrlsController (POST /urls only)
     Contracts/         Request/response DTOs (records)
     Services/          RedisCodeGenerator (Redis INCR + base62 encoding),
                        ExpiredShortUrlCleanupService (BackgroundService, periodic bulk delete)
-  Bitly.ReadApi/        ASP.NET Core Web API - port 5300
+  Bitly.ReadApi/        ASP.NET Core Web API - ports 5300/5301, Dockerfile (same multi-stage pattern)
     Controllers/       RedirectController (GET /{code} only)
     Services/          ShortUrlCache (cache-aside layer: GetAsync/SetAsync, TTL = ExpirationDate or 24h default)
 .config/
   dotnet-tools.json     Local tool manifest (dotnet-ef, pinned version)
+.dockerignore            Excludes bin/obj/.git/etc from the Docker build context
 nginx/nginx.conf         Load balancer config, round-robins across Bitly.ReadApi instances
-docker-compose.yml       Local PostgreSQL (postgres:16-alpine) + Redis (redis:7-alpine, AOF persistence) + nginx
+docker-compose.yml       Full stack: Postgres, Redis, nginx, write-api, read-api-1, read-api-2 (all buildable)
 Bitly.slnx               Solution file (new .slnx format, .NET 9+)
 ```
 
@@ -127,7 +128,7 @@ curl -v http://localhost:8080/<code>
 - [x] **Step 7** — Round out NFRs (expiration cleanup, alias collisions, rate limiting, logging)
 - [ ] **Step 8** — Full Docker Compose stack + polish
 
-Currently on: **Step 7 — done.**
+Currently on: **Step 8, part 1 of 3 (dockerize both services) — done.**
 
 **Known limitations carried forward on purpose:**
 - **New in Step 4**: counter-generated codes are short and strictly sequential — `1, 2, 3, ...` — which means
@@ -411,6 +412,35 @@ Currently on: **Step 7 — done.**
   Log points added: `Bitly.WriteApi.Controllers.UrlsController` (create succeeded, reserved-alias rejection,
   duplicate rejection - the latter two at `Warning`), `Bitly.ReadApi.Controllers.RedirectController` (cache
   hit, cache miss, not-found, expired - all confirmed live to fire on the correct path).
+- **Multi-stage Dockerfiles: SDK image to build/publish, `aspnet` runtime image to actually run** (Step 8):
+  the SDK image (`mcr.microsoft.com/dotnet/sdk:10.0`) includes the full compiler/tooling and is large; the
+  final `aspnet:10.0` runtime image only needs the published output, no compiler. `COPY --from=build` pulls
+  just `/app/publish` across stages, so none of the SDK's bulk ends up in the image that actually ships.
+  `.csproj` files are copied and restored before the rest of the source, a standard layer-caching trick - if
+  only source files change (not dependencies), Docker can reuse the cached restore layer on rebuild.
+- **`depends_on` with `condition: service_healthy`, not just startup order** (Step 8): plain `depends_on`
+  only waits for a container to *start*, not for the application inside it to actually be ready - Postgres's
+  process can be running before it can accept real connections. Since Postgres/Redis already had `healthcheck:`
+  blocks (from Steps 2 and 4), `write-api`/`read-api-1`/`read-api-2` could require `service_healthy` for free,
+  guaranteeing they never attempt a database connection before Postgres is genuinely ready to accept one.
+- **Connection strings switch from `user-secrets` to environment variables inside Compose** (Step 8):
+  `user-secrets` is a file on the *host* machine's filesystem, invisible inside a container - it was never
+  going to work here regardless of environment. `ConnectionStrings__BitlyDb` (double underscore, same
+  .NET-configuration convention used for the `ExpirationCleanup__IntervalSeconds` override in Step 7) is set
+  directly in `docker-compose.yml`, pointing at Compose service names (`postgres`, `redis`) rather than
+  `localhost` - both configurations coexist without conflict since one only exists on the host, the other
+  only inside containers.
+- **Benign `libgssapi_krb5.so.2` warning on container startup, verified not to be a real problem** (Step 8):
+  Npgsql optionally attempts to load a Kerberos/GSSAPI library to support one specific authentication
+  mode, which the slim `aspnet:10.0` image does not include; since the connection string uses plain
+  username/password auth, this has zero functional effect. Verified live rather than assumed: the container
+  never restarted (`RestartCount: 0`), the create request succeeded, and the cleanup job's `DELETE` query ran
+  normally in the same log. Not worth silencing by installing Kerberos libraries just for a cosmetic log line.
+- **Verified all of Step 7's features survive containerization, not just re-explained** (Step 8): rate
+  limiting (5 rapid creates succeeded, the 6th got `429`), reserved-word validation (`400` once outside the
+  rate-limit window - the first attempt correctly got `429` instead, since `UseRateLimiter()` runs before the
+  controller and had just been exhausted by the rate-limit test moments earlier), and the cleanup job's log
+  line all behaved identically to the host-run version.
 
 ## Update this file
 

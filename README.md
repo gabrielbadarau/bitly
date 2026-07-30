@@ -42,7 +42,7 @@ Local-only, zero-cost: everything runs via Docker (Rancher Desktop), no cloud se
 - .NET 10, ASP.NET Core Web API (Controllers)
 - Separate Read and Write services (independent scaling for the read-heavy redirect path vs. the rare create path)
 - nginx load balancer in front of multiple Read service instances
-- PostgreSQL + Redis, run via Docker Compose (Rancher Desktop)
+- Everything - Postgres, Redis, nginx, and both .NET services - runs via Docker Compose (Rancher Desktop)
 - Local only — no cloud dependencies
 
 ## Project structure
@@ -51,10 +51,10 @@ Local-only, zero-cost: everything runs via Docker (Rancher Desktop), no cloud se
 src/
   Bitly.Domain/       Shared entity (ShortUrl) + EF Core DbContext + migrations
   Bitly.WriteApi/      POST /urls - code generation (RedisCodeGenerator, batched counter),
-                       expired-row cleanup (ExpiredShortUrlCleanupService, background job)
-  Bitly.ReadApi/       GET /{code} - redirects (ShortUrlCache, cache-aside)
+                       expired-row cleanup (ExpiredShortUrlCleanupService, background job), Dockerfile
+  Bitly.ReadApi/       GET /{code} - redirects (ShortUrlCache, cache-aside), Dockerfile
 nginx/nginx.conf       Load balancer config (round-robins across Read service instances)
-docker-compose.yml     Local PostgreSQL + Redis + nginx
+docker-compose.yml     Full stack: PostgreSQL + Redis + nginx + Write service + 2 Read service instances
 Bitly.slnx             Solution file
 ```
 

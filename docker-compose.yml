@@ -30,6 +30,57 @@ services:
       timeout: 5s
       retries: 5
 
+  write-api:
+    build:
+      context: .
+      dockerfile: src/Bitly.WriteApi/Dockerfile
+    container_name: bitly-write-api
+    environment:
+      ConnectionStrings__BitlyDb: "Host=postgres;Port=5432;Database=bitly;Username=bitly;Password=bitly_dev_only"
+      ConnectionStrings__Redis: "redis:6379"
+      PublicBaseUrl: "http://localhost:8080"
+    ports:
+      - "5299:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  read-api-1:
+    build:
+      context: .
+      dockerfile: src/Bitly.ReadApi/Dockerfile
+    container_name: bitly-read-api-1
+    environment:
+      ConnectionStrings__BitlyDb: "Host=postgres;Port=5432;Database=bitly;Username=bitly;Password=bitly_dev_only"
+      ConnectionStrings__Redis: "redis:6379"
+      INSTANCE_NAME: "read-a"
+    ports:
+      - "5300:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  read-api-2:
+    build:
+      context: .
+      dockerfile: src/Bitly.ReadApi/Dockerfile
+    container_name: bitly-read-api-2
+    environment:
+      ConnectionStrings__BitlyDb: "Host=postgres;Port=5432;Database=bitly;Username=bitly;Password=bitly_dev_only"
+      ConnectionStrings__Redis: "redis:6379"
+      INSTANCE_NAME: "read-b"
+    ports:
+      - "5301:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   nginx:
     image: nginx:alpine
     container_name: bitly-lb
